@@ -1,7 +1,9 @@
 #include "nghttp2-corosio/server.hpp"
 #include "server_impl.hpp"
+#include "session_impl.hpp"
 
 #include <boost/capy/ex/run_async.hpp>
+#include <boost/capy/io/any_stream.hpp>
 #include <boost/corosio/ipv6_address.hpp>
 #include <boost/corosio/tcp_socket.hpp>
 
@@ -43,6 +45,13 @@ boost::capy::task<> Server::Impl::accept_loop()
       else
          std::cout << remote.v6_address();
       std::cout << ":" << remote.port() << "\n";
+
+      // TODO: wrap `peer` in a TLS stream (corosio::openssl_stream / wolfssl_stream) here once
+      // TLS support is added, before erasing it into `any_stream` below.
+      boost::capy::any_stream stream(std::move(peer));
+
+      auto session = std::make_shared<Session::Impl>(ioc_.get_executor(), std::move(stream));
+      boost::capy::run_async(ioc_.get_executor())(session->run());
    }
 }
 
