@@ -15,6 +15,11 @@ FetchContent_Declare(corosio
 
 FetchContent_MakeAvailable(capy corosio)
 
-add_executable(nghttp2-corosio main.cpp)
-target_link_libraries(nghttp2-corosio PRIVATE Boost::corosio)
+add_subdirectory(src)
+
+add_executable(echo_server main.cpp)
+target_link_libraries(echo_server PRIVATE Boost::corosio)
+
+add_executable(server_main server_main.cpp)
+target_link_libraries(server_main PRIVATE nghttp2-corosio)
 

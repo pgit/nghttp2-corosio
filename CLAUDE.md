@@ -9,9 +9,10 @@ nghttp2-corosio re-implements [nghttp2-asio](https://github.com/nghttp2/nghttp2-
 framework. Unlike nghttp2-asio's callback-based design, this is a coroutine-native implementation
 wrapping [nghttp2](https://github.com/nghttp2/nghttp2).
 
-The project currently consists of a single `main.cpp` with a minimal TCP echo server, used as a
-skeleton while the real library takes shape. Expect the structure to change significantly as HTTP/2
-support is added.
+The `nghttp2-corosio` library (headers in `include/nghttp2-corosio`, sources in `src/`) is where the
+real implementation lives; `main.cpp` is a standalone `echo_server` demo of raw corosio I/O and does
+not depend on the library. Expect the library's structure to change significantly as HTTP/2 support
+is added.
 
 ## Build
 
@@ -20,8 +21,9 @@ cmake -S . -B build
 cmake --build build
 ```
 
-The `nghttp2-corosio` executable is produced at `build/nghttp2-corosio`. `CMAKE_EXPORT_COMPILE_COMMANDS`
-is on, so `build/compile_commands.json` is regenerated on every configure (clangd is set up via
+This produces the `nghttp2-corosio` static library at `build/src/libnghttp2-corosio.a` and the
+`echo_server` demo executable at `build/echo_server`. `CMAKE_EXPORT_COMPILE_COMMANDS` is on, so
+`build/compile_commands.json` is regenerated on every configure (clangd is set up via
 `.devcontainer/devcontainer.json` to read it from the `build` directory).
 
 capy and corosio (both `develop` branch) are pulled in via `FetchContent` in `CMakeLists.txt`, so the
