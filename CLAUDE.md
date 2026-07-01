@@ -48,3 +48,22 @@ each accepted `tcp_socket` it spawns a new detached session coroutine via
 `capy::run_async(ioc.get_executor())(...)`. Session coroutines own their socket by value and read/write
 using `co_await socket.read_some(...)` / `co_await capy::write(socket, ...)`, looping until an error
 (including peer disconnect) breaks the loop.
+
+### Library structure
+
+`nghttp2-corosio`'s public API (`Server`, `Session`, both in namespace `nghttp2_corosio`) follows the
+PIMPL shape of [anyhttp](https://github.com/pgit/anyhttp)'s `server.hpp`/`session.hpp` — a thin
+value-type wrapper (movable, non-copyable) around a `std::shared_ptr<Impl>` — but is built on
+capy/corosio rather than ASIO, with some deliberate deviations from anyhttp:
+
+- `Server` owns its `corosio::io_context` outright (constructed from a `Config`, not handed an
+  external executor like anyhttp's `Server`), and exposes `run()` to drive it synchronously.
+- The `*_impl.hpp` headers (`Server::Impl`, `Session::Impl`) live under `src/`, not `include/`, since
+  no other translation unit needs them yet — anyhttp keeps its equivalents in `include/` because many
+  `.cpp` files (nghttp2 session, beast session, etc.) reach into them. Move them to `include/` if/when
+  the same need arises here.
+
+`Server::Impl` currently just runs an accept loop that logs each connection's source endpoint; it does
+not yet construct a `Session` per connection (`Session::Impl` is an empty stub). `main.cpp`/`echo_server`
+is an unrelated raw-corosio demo that predates the library and does not use it — don't assume the two
+are connected.

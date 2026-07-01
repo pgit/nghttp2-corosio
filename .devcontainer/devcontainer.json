@@ -10,7 +10,6 @@
 	},
 
 	"postCreateCommand": "npm install -g @anthropic-ai/claude-code",
-
 	"customizations": {
 		"vscode": {
 			"settings": {
@@ -38,6 +37,7 @@
 		}
 	},
 
+	"remoteEnv": {"GH_TOKEN": "${localEnv:GH_TOKEN}" },
 	"mounts": [
 		"source=corosio-quickstart-bashhistory,target=/commandhistory,type=volume",
 		"source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
