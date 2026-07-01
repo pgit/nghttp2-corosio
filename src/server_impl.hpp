@@ -21,6 +21,7 @@ public:
 
    void start();
    std::size_t run() { return ioc_.run(); }
+   void stop() { ioc_.stop(); }
 
    const Config& config() const noexcept { return config_; }
    Server::executor_type get_executor() const noexcept { return ioc_.get_executor(); }

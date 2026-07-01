@@ -10,6 +10,32 @@ is a coroutine-native implementation wrapping [nghttp2](https://github.com/nghtt
 
 This project is meant to be used in a C++ devcontainer ([pgit/cpp-devcontainer](https://github.com/pgit/cpp-devcontainer)).
 
+## Build
+
+```sh
+cmake -S . -B build
+cmake --build build
+```
+
+This also builds and runs a small GoogleTest suite (`test/`); run it directly via
+`./build/test/nghttp2-corosio-tests` or through `ctest --test-dir build`.
+
+## Running
+
+```sh
+./build/server_main [port]
+```
+
+Request handling isn't implemented yet, so the server won't send back a response, but it does
+complete the HTTP/2 connection preface and SETTINGS handshake and will log every frame it sends and
+receives. Since there's no TLS/ALPN negotiation to negotiate the protocol yet, use curl's
+`--http2-prior-knowledge` flag to speak HTTP/2 directly over plain TCP (h2c) instead of falling back
+to HTTP/1.1:
+
+```sh
+curl --http2-prior-knowledge http://localhost:8080/
+```
+
 ## References
 
 * [capy](https://github.com/cppalliance/capy)

@@ -37,6 +37,12 @@ private:
    /// the stream, coalescing small chunks into fewer writes. Suspends on `write_ready_` once
    /// nghttp2 has nothing left to send but still wants to read or write; ends once nghttp2 wants
    /// neither.
+   ///
+   /// Known issue: the final start_write() from recv_loop() (waking this up to flush the closing
+   /// GOAWAY after the peer disconnects) is occasionally missed, apparently a corosio scheduler
+   /// edge case around same-thread wakeups posted right before the scheduler would otherwise go
+   /// idle -- reproduced with nothing nghttp2-specific involved. When missed, this coroutine (and
+   /// the socket it holds) leaks; see the caveat on Server::stop().
    boost::capy::io_task<> send_loop();
 
    /// Reads bytes from the stream and feeds them to nghttp2 (nghttp2_session_mem_recv2), which

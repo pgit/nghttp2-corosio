@@ -72,6 +72,8 @@ boost::corosio::endpoint Server::local_endpoint() const { return impl_->local_en
 
 std::size_t Server::run() { return impl_->run(); }
 
+void Server::stop() { impl_->stop(); }
+
 // =================================================================================================
 
 } // namespace nghttp2_corosio

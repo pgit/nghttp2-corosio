@@ -39,6 +39,15 @@ public:
    /// Runs the server's io_context until stopped. Blocks the calling thread.
    std::size_t run();
 
+   /// Causes a concurrent run() (on another thread) to return as soon as possible. Mainly useful
+   /// for tests that run the server on a background thread and need to shut it down afterwards.
+   ///
+   /// Known issue: if a session hasn't fully wound down (e.g. its peer disconnected but the final
+   /// GOAWAY hasn't been flushed yet), destroying this Server afterwards can hang or corrupt
+   /// memory -- see the comment on Session::Impl::send_loop() in session.cpp. Safe to call once no
+   /// sessions are in flight (e.g. right after construction, before accepting any connections).
+   void stop();
+
 private:
    std::shared_ptr<Impl> impl_;
 };
