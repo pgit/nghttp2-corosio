@@ -1,0 +1,48 @@
+{
+	"name": "corosio-quickstart",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	"runArgs": ["--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined"],
+
+	"features": {
+		"ghcr.io/devcontainers/features/node:2.0.0": {}
+	},
+
+	"postCreateCommand": "npm install -g @anthropic-ai/claude-code",
+
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"clangd.arguments": [
+					"--clang-tidy",
+					"--pch-storage=disk",
+					"--background-index",
+					"--compile-commands-dir=build"
+				],
+				"C_Cpp.intelliSenseEngine": "disabled",
+				"lldb.showDisassembly": "never",
+				"[cpp]": {
+					"editor.defaultFormatter": "xaver.clang-format"
+				}
+			},
+			"extensions": [
+				"llvm-vs-code-extensions.vscode-clangd",
+				"ms-vscode.cmake-tools",
+				"ms-vscode.cpptools",
+				"usernamehw.errorlens",
+				"vadimcn.vscode-lldb",
+				"xaver.clang-format",
+				"anthropic.claude-code"
+			]
+		}
+	},
+
+	"mounts": [
+		"source=corosio-quickstart-bashhistory,target=/commandhistory,type=volume",
+		"source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached"
+	],
+
+	"remoteUser": "vscode"
+}
