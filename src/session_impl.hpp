@@ -19,8 +19,20 @@ namespace nghttp2_corosio
 class Session::Impl : public std::enable_shared_from_this<Session::Impl>
 {
 public:
-   Impl(boost::capy::any_executor executor, boost::capy::any_stream stream)
-      : executor_(std::move(executor)), stream_(std::move(stream))
+   /// Both roles are driven by the exact same send_loop()/recv_loop(); the only difference is
+   /// which nghttp2_session_*_new2() run() calls to set up the underlying nghttp2_session. Unlike
+   /// anyhttp (which templates NGHttp2SessionImpl<Stream> on the stream type to share this code
+   /// across server/client), we don't need that here: stream_ is already type-erased to
+   /// any_stream, so send_loop()/recv_loop() are shared as ordinary member functions regardless
+   /// of which stream implementation is behind them.
+   enum class Role
+   {
+      server,
+      client
+   };
+
+   Impl(boost::capy::any_executor executor, boost::capy::any_stream stream, Role role)
+      : executor_(std::move(executor)), stream_(std::move(stream)), role_(role)
    {
    }
    ~Impl();
@@ -57,6 +69,7 @@ private:
 
    boost::capy::any_executor executor_;
    boost::capy::any_stream stream_;
+   Role role_;
 
    nghttp2_session* session_ = nullptr;
    boost::capy::async_event write_ready_;

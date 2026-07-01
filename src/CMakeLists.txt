@@ -2,6 +2,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2)
 
 add_library(nghttp2-corosio
+    client.cpp
+    client_impl.hpp
     server.cpp
     server_impl.hpp
     session.cpp

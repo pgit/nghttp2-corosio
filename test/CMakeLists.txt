@@ -6,6 +6,7 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 add_executable(nghttp2-corosio-tests
+    test_client.cpp
     test_server.cpp
 )
 

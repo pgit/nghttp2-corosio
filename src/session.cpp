@@ -205,10 +205,14 @@ boost::capy::task<> Session::Impl::run()
    nghttp2_option_set_no_auto_window_update(options.get(), 1);
 
    auto callbacks = setup_callbacks();
-   if (nghttp2_session_server_new2(&session_, callbacks.get(), this, options.get()))
-      throw std::runtime_error("nghttp2_session_server_new2 failed");
+   int rv = role_ == Role::server
+               ? nghttp2_session_server_new2(&session_, callbacks.get(), this, options.get())
+               : nghttp2_session_client_new2(&session_, callbacks.get(), this, options.get());
+   if (rv)
+      throw std::runtime_error(role_ == Role::server ? "nghttp2_session_server_new2 failed"
+                                                       : "nghttp2_session_client_new2 failed");
 
-   std::println("session created");
+   std::println("session created ({})", role_ == Role::server ? "server" : "client");
 
    nghttp2_settings_entry ent{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100};
    nghttp2_submit_settings(session_, NGHTTP2_FLAG_NONE, &ent, 1);
