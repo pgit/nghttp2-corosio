@@ -24,15 +24,16 @@ The `nghttp2-corosio` executable is produced at `build/nghttp2-corosio`. `CMAKE_
 is on, so `build/compile_commands.json` is regenerated on every configure (clangd is set up via
 `.devcontainer/devcontainer.json` to read it from the `build` directory).
 
+capy and corosio (both `develop` branch) are pulled in via `FetchContent` in `CMakeLists.txt`, so the
+first `cmake -S . -B build` configure clones and builds them as part of this project — no
+pre-installed system packages required. If capy/corosio APIs seem missing or different than expected,
+check the cloned sources under `build/_deps/{capy,corosio}-src` rather than assuming upstream docs
+are current — both libraries are pre-1.0 and evolving.
+
 ## Environment
 
 This project is meant to be used in the devcontainer defined here (built from
 `docker.io/psedoc/cpp-devcontainer`, see [pgit/cpp-devcontainer](https://github.com/pgit/cpp-devcontainer)).
-The container's `Dockerfile` builds and installs `capy` and `corosio` (both `develop` branch) from
-source into `/usr/local`, so `find_package(boost_corosio REQUIRED)` resolves without extra setup.
-If capy/corosio APIs seem missing or different than expected, check the installed headers under
-`/usr/local/include/boost/{capy,corosio}` rather than assuming upstream docs are current — both
-libraries are pre-1.0 and evolving.
 
 ## Architecture
 
