@@ -8,9 +8,10 @@
 #include <nghttp2/nghttp2.h>
 
 #include <array>
-#include <iostream>
 #include <memory>
+#include <print>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace nghttp2_corosio
@@ -21,54 +22,127 @@ namespace nghttp2_corosio
 namespace
 {
 
+std::string_view frame_type_name(std::uint8_t type)
+{
+   switch (type)
+   {
+   case NGHTTP2_DATA:
+      return "DATA";
+   case NGHTTP2_HEADERS:
+      return "HEADERS";
+   case NGHTTP2_PRIORITY:
+      return "PRIORITY";
+   case NGHTTP2_RST_STREAM:
+      return "RST_STREAM";
+   case NGHTTP2_SETTINGS:
+      return "SETTINGS";
+   case NGHTTP2_PUSH_PROMISE:
+      return "PUSH_PROMISE";
+   case NGHTTP2_PING:
+      return "PING";
+   case NGHTTP2_GOAWAY:
+      return "GOAWAY";
+   case NGHTTP2_WINDOW_UPDATE:
+      return "WINDOW_UPDATE";
+   case NGHTTP2_CONTINUATION:
+      return "CONTINUATION";
+   case NGHTTP2_ALTSVC:
+      return "ALTSVC";
+   case NGHTTP2_ORIGIN:
+      return "ORIGIN";
+   default:
+      return "UNKNOWN";
+   }
+}
+
+std::string_view to_string_view(const uint8_t* data, std::size_t len)
+{
+   return {reinterpret_cast<const char*>(data), len};
+}
+
+std::string_view to_string_view(nghttp2_rcbuf* buf)
+{
+   auto v = nghttp2_rcbuf_get_buf(buf);
+   return to_string_view(v.base, v.len);
+}
+
 // -------------------------------------------------------------------------------------------------
 // nghttp2 callbacks
 //
 // None of these do any request handling yet -- that requires per-stream state (an equivalent of
-// anyhttp's NGHttp2Stream) that doesn't exist in this codebase yet. For now they just let nghttp2
-// parse the connection according to the HTTP/2 protocol (SETTINGS, PING, WINDOW_UPDATE, etc. are
-// all handled internally by nghttp2 regardless of what callbacks are registered).
+// anyhttp's NGHttp2Stream) that doesn't exist in this codebase yet. For now they just log what's
+// happening and let nghttp2 parse the connection according to the HTTP/2 protocol (SETTINGS, PING,
+// WINDOW_UPDATE, etc. are all handled internally by nghttp2 regardless of what callbacks are
+// registered).
 // -------------------------------------------------------------------------------------------------
 
-int on_begin_headers_callback(nghttp2_session*, const nghttp2_frame*, void*) { return 0; }
-
-int on_header_callback(nghttp2_session*, const nghttp2_frame*, const uint8_t*, std::size_t,
-                        const uint8_t*, std::size_t, std::uint8_t, void*)
+int on_begin_headers_callback(nghttp2_session*, const nghttp2_frame* frame, void*)
 {
+   std::println("[{}] on_begin_headers_callback", frame->hd.stream_id);
+   return 0;
+}
+
+int on_header_callback(nghttp2_session*, const nghttp2_frame* frame, const uint8_t* name,
+                        std::size_t namelen, const uint8_t* value, std::size_t valuelen,
+                        std::uint8_t, void*)
+{
+   std::println("[{}] {}: {}", frame->hd.stream_id, to_string_view(name, namelen),
+                to_string_view(value, valuelen));
    return 0;
 }
 
 int on_frame_not_send_callback(nghttp2_session*, const nghttp2_frame* frame, int lib_error_code,
                                 void*)
 {
-   std::cerr << "nghttp2: frame not sent (type=" << static_cast<int>(frame->hd.type)
-             << "): " << nghttp2_strerror(lib_error_code) << "\n";
+   std::println("[{}] on_frame_not_send_callback: {} {}", frame->hd.stream_id,
+                frame_type_name(frame->hd.type), nghttp2_strerror(lib_error_code));
    return 0;
 }
 
 int on_error_callback(nghttp2_session*, int, const char* msg, std::size_t len, void*)
 {
-   std::cerr << "nghttp2 error: " << std::string_view(msg, len) << "\n";
+   std::println("nghttp2 error: {}", std::string_view(msg, len));
    return 0;
 }
 
-int on_invalid_header_callback(nghttp2_session*, const nghttp2_frame*, nghttp2_rcbuf*,
-                                nghttp2_rcbuf*, std::uint8_t, void*)
+int on_invalid_header_callback(nghttp2_session*, const nghttp2_frame* frame, nghttp2_rcbuf* name,
+                                nghttp2_rcbuf* value, std::uint8_t, void*)
 {
+   std::println("[{}] on_invalid_header_callback: {}: {}", frame->hd.stream_id, to_string_view(name),
+                to_string_view(value));
    return 0;
 }
 
-int on_frame_recv_callback(nghttp2_session*, const nghttp2_frame*, void*) { return 0; }
-
-int on_data_chunk_recv_callback(nghttp2_session*, std::uint8_t, std::int32_t, const uint8_t*,
-                                 std::size_t, void*)
+int on_frame_recv_callback(nghttp2_session*, const nghttp2_frame* frame, void*)
 {
+   std::println("[{}] on_frame_recv_callback: {} length={} flags={}", frame->hd.stream_id,
+                frame_type_name(frame->hd.type), frame->hd.length, frame->hd.flags);
    return 0;
 }
 
-int on_frame_send_callback(nghttp2_session*, const nghttp2_frame*, void*) { return 0; }
+int on_data_chunk_recv_callback(nghttp2_session*, std::uint8_t, std::int32_t stream_id,
+                                 const uint8_t*, std::size_t len, void*)
+{
+   std::println("[{}] on_data_chunk_recv_callback: {} bytes", stream_id, len);
+   return 0;
+}
 
-int on_stream_close_callback(nghttp2_session*, std::int32_t, std::uint32_t, void*) { return 0; }
+int on_frame_send_callback(nghttp2_session*, const nghttp2_frame* frame, void*)
+{
+   std::println("[{}] on_frame_send_callback: {} length={} flags={}", frame->hd.stream_id,
+                frame_type_name(frame->hd.type), frame->hd.length, frame->hd.flags);
+   return 0;
+}
+
+int on_stream_close_callback(nghttp2_session* session, std::int32_t stream_id,
+                              std::uint32_t error_code, void*)
+{
+   bool local_close = nghttp2_session_get_stream_local_close(session, stream_id);
+   bool remote_close = nghttp2_session_get_stream_remote_close(session, stream_id);
+   std::println("[{}] on_stream_close_callback: {} (local={}, remote={})", stream_id,
+                nghttp2_http2_strerror(error_code), local_close, remote_close);
+   return 0;
+}
 
 using session_callbacks_ptr =
    std::unique_ptr<nghttp2_session_callbacks, void (*)(nghttp2_session_callbacks*)>;
@@ -134,12 +208,14 @@ boost::capy::task<> Session::Impl::run()
    if (nghttp2_session_server_new2(&session_, callbacks.get(), this, options.get()))
       throw std::runtime_error("nghttp2_session_server_new2 failed");
 
+   std::println("session created");
+
    nghttp2_settings_entry ent{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100};
    nghttp2_submit_settings(session_, NGHTTP2_FLAG_NONE, &ent, 1);
 
    [[maybe_unused]] auto result = co_await boost::capy::when_all(send_loop(), recv_loop());
 
-   std::cout << "Session ended\n";
+   std::println("session ended");
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -157,8 +233,8 @@ boost::capy::io_task<> Session::Impl::send_loop()
       auto nread = nghttp2_session_mem_send2(session_, &data);
       if (nread < 0)
       {
-         std::cerr << "send loop: nghttp2_session_mem_send2 failed: "
-                    << nghttp2_strerror(static_cast<int>(nread)) << "\n";
+         std::println("send loop: nghttp2_session_mem_send2 failed: {}",
+                      nghttp2_strerror(static_cast<int>(nread)));
          break;
       }
 
@@ -175,6 +251,7 @@ boost::capy::io_task<> Session::Impl::send_loop()
       if (const auto bytes_to_write = pending.size() + static_cast<std::size_t>(nread);
           bytes_to_write > 0)
       {
+         std::println("send loop: writing {} bytes...", bytes_to_write);
          std::array<boost::capy::const_buffer, 2> seq{
             boost::capy::const_buffer(pending.data(), pending.size()),
             boost::capy::const_buffer(data, static_cast<std::size_t>(nread))};
@@ -182,7 +259,7 @@ boost::capy::io_task<> Session::Impl::send_loop()
          pending.clear();
          if (ec)
          {
-            std::cerr << "send loop: write error: " << ec.message() << "\n";
+            std::println("send loop: write error: {}", ec.message());
             break;
          }
          continue;
@@ -193,11 +270,13 @@ boost::capy::io_task<> Session::Impl::send_loop()
       if (!nghttp2_session_want_read(session_) && !nghttp2_session_want_write(session_))
          break;
 
+      std::println("send loop: waiting...");
       write_ready_.clear();
       if (auto [ec] = co_await write_ready_.wait(); ec)
          break;
    }
 
+   std::println("send loop: done");
    co_return boost::capy::io_result<>{};
 }
 
@@ -213,14 +292,15 @@ boost::capy::io_task<> Session::Impl::recv_loop()
          co_await stream_.read_some(boost::capy::mutable_buffer(buffer.data(), buffer.size()));
       if (ec)
       {
-         std::cout << "recv loop: " << ec.message() << ", terminating session\n";
+         std::println("recv loop: {}, terminating session", ec.message());
          break;
       }
 
+      std::println("recv loop: read {} bytes", n);
       if (auto rv = nghttp2_session_mem_recv2(session_, buffer.data(), n); rv < 0)
       {
-         std::cerr << "recv loop: nghttp2_session_mem_recv2 failed: "
-                    << nghttp2_strerror(static_cast<int>(rv)) << "\n";
+         std::println("recv loop: nghttp2_session_mem_recv2 failed: {}",
+                      nghttp2_strerror(static_cast<int>(rv)));
          nghttp2_session_terminate_session(session_, NGHTTP2_PROTOCOL_ERROR);
          start_write();
          break;
@@ -233,6 +313,7 @@ boost::capy::io_task<> Session::Impl::recv_loop()
    nghttp2_session_terminate_session(session_, NGHTTP2_NO_ERROR);
    start_write(); // wake send_loop() so it can flush the GOAWAY and notice it's done
 
+   std::println("recv loop: done");
    co_return boost::capy::io_result<>{};
 }
 
