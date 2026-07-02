@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nghttp2-corosio/server.hpp"
 #include "nghttp2-corosio/session.hpp"
 
 #include <boost/capy/ex/async_event.hpp>
@@ -36,8 +37,12 @@ public:
       client
    };
 
-   Impl(boost::capy::any_executor executor, boost::capy::any_stream stream, Role role)
-      : executor_(std::move(executor)), stream_(std::move(stream)), role_(role)
+   /// `handler` is only meaningful for a server-role session (invoked per request, see
+   /// handle_request()); pass a default-constructed one for a client-role session.
+   Impl(boost::capy::any_executor executor, boost::capy::any_stream stream, Role role,
+        RequestHandler handler)
+      : executor_(std::move(executor)), stream_(std::move(stream)), role_(role),
+        handler_(std::move(handler))
    {
    }
    ~Impl();
@@ -46,8 +51,8 @@ public:
 
    /// Sets up the nghttp2 session (callbacks, options, initial SETTINGS), then drives it via
    /// send_loop()/recv_loop() until the connection closes. On a server session, every incoming
-   /// request is handled by a hardcoded echo handler (see handle_request()) -- a pluggable
-   /// request-handler API will come later.
+   /// request's response is submitted (fixed 200 status) and then handed to `handler_`, if set --
+   /// see handle_request().
    boost::capy::task<> run();
 
    /// Underlying nghttp2 session, valid once run() has set it up. Used by Stream to drive
@@ -67,7 +72,7 @@ public:
    std::shared_ptr<Stream> find_stream(std::int32_t id) const;
    void close_stream(std::int32_t id);
 
-   /// Spawns (detached) the hardcoded echo handler for a newly-arrived request.
+   /// Spawns (detached) handle_request() for a newly-arrived request.
    void dispatch_request(std::shared_ptr<Stream> stream);
 
 private:
@@ -89,14 +94,15 @@ private:
    /// stream errors or nghttp2 wants neither to read nor write.
    boost::capy::io_task<> recv_loop();
 
-   /// Hardcoded server-side request handler: reads the request body to completion, then submits a
-   /// 200 response echoing it back. Spawned (detached) per request by the HEADERS/REQUEST case in
-   /// on_frame_recv_callback().
+   /// Submits the response (fixed 200 status) for a newly-arrived request, then hands its
+   /// Reader/Writer to `handler_` (if set; otherwise the response body is just closed empty).
+   /// Spawned (detached) per request by the HEADERS/REQUEST case in on_frame_recv_callback().
    boost::capy::task<> handle_request(std::shared_ptr<Stream> stream);
 
    boost::capy::any_executor executor_;
    boost::capy::any_stream stream_;
    Role role_;
+   RequestHandler handler_;
 
    nghttp2_session* session_ = nullptr;
    boost::capy::async_event write_ready_;

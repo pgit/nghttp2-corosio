@@ -1,12 +1,15 @@
 #pragma once
 
+#include <boost/capy/buffers.hpp>
 #include <boost/capy/ex/any_executor.hpp>
 #include <boost/capy/io/any_read_source.hpp>
 #include <boost/capy/io/any_write_sink.hpp>
 #include <boost/capy/io_task.hpp>
 
 #include <memory>
+#include <string>
 #include <string_view>
+#include <utility>
 
 namespace nghttp2_corosio
 {
@@ -27,6 +30,35 @@ public:
    /// client session. Any concrete type satisfying capy's WriteSink concept can be type-erased
    /// into one of these.
    using Writer = boost::capy::any_write_sink;
+
+   /// The incoming request on a server session: the requested path (the raw :path pseudo-header;
+   /// no query/fragment splitting or URL parsing yet) plus the request body. Request forwards
+   /// read_some()/read() to the body, so it can be used directly wherever a Reader is expected.
+   class Request
+   {
+   public:
+      Request(std::string path, Reader reader) : path_(std::move(path)), reader_(std::move(reader))
+      {
+      }
+
+      std::string_view path() const noexcept { return path_; }
+
+      template <boost::capy::MutableBufferSequence MB>
+      auto read_some(MB buffers)
+      {
+         return reader_.read_some(buffers);
+      }
+
+      template <boost::capy::MutableBufferSequence MB>
+      boost::capy::io_task<std::size_t> read(MB buffers)
+      {
+         return reader_.read(buffers);
+      }
+
+   private:
+      std::string path_;
+      Reader reader_;
+   };
 
    Session() = default;
    explicit Session(std::shared_ptr<Impl> impl);

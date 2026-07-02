@@ -1,10 +1,13 @@
 #pragma once
 
+#include "nghttp2-corosio/session.hpp"
+
 #include <boost/corosio/endpoint.hpp>
 #include <boost/corosio/io_context.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -13,10 +16,23 @@ namespace nghttp2_corosio
 
 // =================================================================================================
 
+/// Handles every incoming request on the server -- there's no built-in routing, so a handler that
+/// wants to do different things for different paths inspects `request.path()` itself and muxes
+/// accordingly. The framework submits the response headers (a fixed 200 status; there's no way to
+/// customize that or add other headers yet) before running this, so a handler can start writing
+/// immediately -- see server_main.cpp for a streaming echo handler.
+using RequestHandler =
+   std::function<boost::capy::task<>(Session::Request request, Session::Writer response)>;
+
+// =================================================================================================
+
 struct Config
 {
    std::string listen_address = "::";
    std::uint16_t port = 8080;
+
+   /// Called once per incoming request. If unset, every request gets an empty 200 response.
+   RequestHandler handler;
 };
 
 // =================================================================================================

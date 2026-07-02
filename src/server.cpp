@@ -51,7 +51,7 @@ boost::capy::task<> Server::Impl::accept_loop()
       boost::capy::any_stream stream(std::move(peer));
 
       auto session = std::make_shared<Session::Impl>(ioc_.get_executor(), std::move(stream),
-                                                      Session::Impl::Role::server);
+                                                      Session::Impl::Role::server, config_.handler);
       boost::capy::run_async(ioc_.get_executor())(session->run());
    }
 }

@@ -62,6 +62,13 @@ std::ptrdiff_t Stream::producer_callback(std::uint8_t* buf, std::size_t length,
    {
       if (write_eof_requested_)
          *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+
+      // Reset synchronously, not just in write_impl() after write_progress_ wakes it back up:
+      // nghttp2 can call this callback again for the same stream before that resumption actually
+      // runs (it's posted, not immediate), and by then write_pending_ must already read false or
+      // this returns another spurious zero-length, non-deferred completion -- flooding empty DATA
+      // frames until the real resumption finally catches up.
+      write_pending_ = false;
       write_progress_.set();
    }
 

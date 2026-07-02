@@ -11,11 +11,36 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <string>
 #include <string_view>
 #include <thread>
+
+namespace
+{
+
+// Same shape as server_main.cpp's echo handler: streams the request body straight back.
+boost::capy::task<> echo(nghttp2_corosio::Session::Request request, nghttp2_corosio::Session::Writer response)
+{
+   std::array<std::uint8_t, 64 * 1024> buffer;
+   for (;;)
+   {
+      auto [rec, n] =
+         co_await request.read_some(boost::capy::mutable_buffer(buffer.data(), buffer.size()));
+      if (rec)
+         break;
+
+      auto [wec, wn] = co_await response.write(boost::capy::const_buffer(buffer.data(), n));
+      if (wec)
+         break;
+   }
+
+   [[maybe_unused]] auto result = co_await response.write_eof();
+}
+
+} // namespace
 
 namespace
 {
@@ -54,6 +79,7 @@ TEST(ClientTest, EchoesRequestBody)
 {
    nghttp2_corosio::Config config;
    config.port = 0; // ask the OS for an unused port
+   config.handler = echo;
    auto* server = new nghttp2_corosio::Server(config);
    auto port = server->local_endpoint().port();
 

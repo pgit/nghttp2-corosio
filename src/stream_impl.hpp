@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -48,6 +49,10 @@ public:
    /// doesn't know it until after that call, but the Stream (as the data provider's source) has
    /// to exist before making it.
    void set_id(std::int32_t id) noexcept { id_ = id; }
+
+   /// Set by on_header_callback() as the :path pseudo-header arrives (server sessions only).
+   void set_path(std::string path) { path_ = std::move(path); }
+   const std::string& path() const noexcept { return path_; }
 
    // ----------------------------------------------------------------------------------------------
    // Read side, fed by on_data_chunk_recv_callback() and END_STREAM detection in
@@ -159,6 +164,7 @@ private:
    std::shared_ptr<Session::Impl> session_;
    std::int32_t id_;
    bool closed_ = false;
+   std::string path_;
 
    // read side
    std::vector<std::uint8_t> read_buffer_;

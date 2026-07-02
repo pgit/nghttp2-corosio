@@ -93,10 +93,9 @@ nghttp2_ssize data_source_read_callback(nghttp2_session*, std::int32_t, std::uin
 // nghttp2 callbacks
 //
 // These wire nghttp2's protocol-level events into the per-stream Stream objects (src/stream.cpp),
-// which bridge them to the coroutine-native StreamReader/StreamWriter. Header fields themselves
-// (beyond routing by stream ID/category) aren't captured anywhere yet -- server sessions run a
-// single hardcoded echo handler regardless of what was requested; a pluggable request-handler API
-// and a real headers API will come later.
+// which bridge them to the coroutine-native StreamReader/StreamWriter. Only the :path
+// pseudo-header is captured (Stream::path(), surfaced via Session::Request::path()) -- there's no
+// general headers API yet.
 // -------------------------------------------------------------------------------------------------
 
 int on_begin_headers_callback(nghttp2_session*, const nghttp2_frame* frame, void* user_data)
@@ -113,10 +112,16 @@ int on_begin_headers_callback(nghttp2_session*, const nghttp2_frame* frame, void
 
 int on_header_callback(nghttp2_session*, const nghttp2_frame* frame, const uint8_t* name,
                         std::size_t namelen, const uint8_t* value, std::size_t valuelen,
-                        std::uint8_t, void*)
+                        std::uint8_t, void* user_data)
 {
-   std::println("[{}] {}: {}", frame->hd.stream_id, to_string_view(name, namelen),
-                to_string_view(value, valuelen));
+   auto name_sv = to_string_view(name, namelen);
+   auto value_sv = to_string_view(value, valuelen);
+   std::println("[{}] {}: {}", frame->hd.stream_id, name_sv, value_sv);
+
+   if (name_sv == ":path")
+      if (auto stream = static_cast<Session::Impl*>(user_data)->find_stream(frame->hd.stream_id))
+         stream->set_path(std::string(value_sv));
+
    return 0;
 }
 
@@ -420,15 +425,6 @@ boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream
 {
    auto self = shared_from_this(); // keep the session alive for the duration of the coroutine
 
-   std::string body;
-   StreamReader reader(stream);
-   if (auto [ec, n] = co_await boost::capy::read(reader, boost::capy::dynamic_buffer(body)); ec)
-   {
-      std::println("[{}] handle_request: error reading body: {}", stream->id(), ec.message());
-      co_return;
-   }
-   std::println("[{}] handle_request: echoing {} bytes back", stream->id(), body.size());
-
    nghttp2_nv nva[]{make_nv(":status", "200")};
    nghttp2_data_provider2 prd{.source = {.ptr = stream.get()}, .read_callback = data_source_read_callback};
    if (nghttp2_submit_response2(session_, stream->id(), nva, 1, &prd))
@@ -438,10 +434,18 @@ boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream
    }
    start_write();
 
-   StreamWriter writer(stream);
-   auto [ec, n] = co_await writer.write_eof(boost::capy::const_buffer(body.data(), body.size()));
-   if (ec)
-      std::println("[{}] handle_request: error writing response: {}", stream->id(), ec.message());
+   Session::Request request(stream->path(), Session::Reader(StreamReader(stream)));
+   Session::Writer response{StreamWriter(stream)};
+
+   if (handler_)
+   {
+      co_await handler_(std::move(request), std::move(response));
+   }
+   else
+   {
+      std::println("[{}] handle_request: no handler configured, closing response empty", stream->id());
+      [[maybe_unused]] auto result = co_await response.write_eof();
+   }
 }
 
 // -------------------------------------------------------------------------------------------------
