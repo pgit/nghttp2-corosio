@@ -21,10 +21,12 @@ cmake -S . -B build
 cmake --build build
 ```
 
-This produces the `nghttp2-corosio` static library at `build/src/libnghttp2-corosio.a` and the
-`echo_server` demo executable at `build/echo_server`. `CMAKE_EXPORT_COMPILE_COMMANDS` is on, so
-`build/compile_commands.json` is regenerated on every configure (clangd is set up via
-`.devcontainer/devcontainer.json` to read it from the `build` directory).
+This produces the `nghttp2-corosio` static library at `build/src/libnghttp2-corosio.a`, the
+`echo_server` demo executable at `build/echo_server`, and a GoogleTest binary at
+`build/test/nghttp2-corosio-tests` (run directly, or via `ctest --test-dir build`).
+`CMAKE_EXPORT_COMPILE_COMMANDS` is on, so `build/compile_commands.json` is regenerated on every
+configure (clangd is set up via `.devcontainer/devcontainer.json` to read it from the `build`
+directory).
 
 capy and corosio (both `develop` branch) are pulled in via `FetchContent` in `CMakeLists.txt`, so the
 first `cmake -S . -B build` configure clones and builds them as part of this project — no
@@ -57,13 +59,34 @@ value-type wrapper (movable, non-copyable) around a `std::shared_ptr<Impl>` — 
 capy/corosio rather than ASIO, with some deliberate deviations from anyhttp:
 
 - `Server` owns its `corosio::io_context` outright (constructed from a `Config`, not handed an
-  external executor like anyhttp's `Server`), and exposes `run()` to drive it synchronously.
-- The `*_impl.hpp` headers (`Server::Impl`, `Session::Impl`) live under `src/`, not `include/`, since
-  no other translation unit needs them yet — anyhttp keeps its equivalents in `include/` because many
-  `.cpp` files (nghttp2 session, beast session, etc.) reach into them. Move them to `include/` if/when
-  the same need arises here.
+  external executor like anyhttp's `Server`), and exposes `run()` to drive it synchronously. `Client`
+  instead takes an external `any_executor`, matching anyhttp — it's meant to connect from within an
+  application that already has its own execution context (e.g. the same one driving a `Server`).
+- The `*_impl.hpp` headers (`Server::Impl`, `Session::Impl`, `Client::Impl`, `Stream`) live under
+  `src/`, not `include/`, since no other translation unit needs them yet — anyhttp keeps its
+  equivalents in `include/` because many `.cpp` files (nghttp2 session, beast session, etc.) reach
+  into them. Move them to `include/` if/when the same need arises here.
+- Unlike anyhttp, which templates its nghttp2 session on the stream type so server/client sessions can
+  share `send_loop()`/`recv_loop()`, `Session::Impl` type-erases its stream to `any_stream`, so those
+  loops are already shared as ordinary member functions; a `Session::Impl::Role` enum picks
+  `nghttp2_session_server_new2()` vs `_client_new2()`, the one thing that actually differs.
 
-`Server::Impl` currently just runs an accept loop that logs each connection's source endpoint; it does
-not yet construct a `Session` per connection (`Session::Impl` is an empty stub). `main.cpp`/`echo_server`
-is an unrelated raw-corosio demo that predates the library and does not use it — don't assume the two
-are connected.
+`main.cpp`/`echo_server` is an unrelated raw-corosio demo that predates the library and does not use
+it — don't assume the two are connected.
+
+`Server`/`Client` sessions run a full HTTP/2 handshake and drive real request/response bodies through
+`Session::Reader`/`Session::Writer` (type aliases for capy's `any_read_source`/`any_write_sink` — see
+https://develop.capy.cpp.al/capy/6.streams/6.intro.html), bridged from nghttp2's synchronous callbacks
+via `Stream` (`src/stream_impl.hpp`/`stream.cpp`) using `capy::async_event`. There's no pluggable
+request-handler API yet: every server-side request is handled by a single hardcoded echo handler
+(`Session::Impl::handle_request()`), and the client has one method, `Session::submit_request(path)`,
+with fixed pseudo-headers (`POST`, `http`, a hardcoded `:authority`). Headers beyond routing by stream
+ID/category aren't captured anywhere yet.
+
+**Known issue**: `recv_loop()`'s final `start_write()` (waking a parked `send_loop()` to flush the
+closing GOAWAY after the peer disconnects) is occasionally missed — looks like a corosio scheduler
+edge case around same-thread wakeups posted right before the scheduler would otherwise go idle,
+reproduced with a minimal example that doesn't touch nghttp2 at all. When missed, the session's
+coroutine and socket leak, and destroying the owning `Server`/`Client` afterward can hang or corrupt
+memory. See the comment on `Session::Impl::send_loop()`. Until it's fixed upstream, tests sidestep it
+by deliberately leaking each test's `Server` (`new`, never `delete`d) instead of tearing it down.

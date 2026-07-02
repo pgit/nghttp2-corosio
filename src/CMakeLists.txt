@@ -8,6 +8,8 @@ add_library(nghttp2-corosio
     server_impl.hpp
     session.cpp
     session_impl.hpp
+    stream.cpp
+    stream_impl.hpp
 )
 
 target_include_directories(nghttp2-corosio

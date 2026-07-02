@@ -1,7 +1,11 @@
 #include "nghttp2-corosio/session.hpp"
 #include "session_impl.hpp"
+#include "stream_impl.hpp"
 
 #include <boost/capy/buffers.hpp>
+#include <boost/capy/buffers/string_dynamic_buffer.hpp>
+#include <boost/capy/ex/run_async.hpp>
+#include <boost/capy/read.hpp>
 #include <boost/capy/when_all.hpp>
 #include <boost/capy/write.hpp>
 
@@ -11,7 +15,9 @@
 #include <memory>
 #include <print>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace nghttp2_corosio
@@ -66,19 +72,42 @@ std::string_view to_string_view(nghttp2_rcbuf* buf)
    return to_string_view(v.base, v.len);
 }
 
+nghttp2_nv make_nv(std::string_view name, std::string_view value)
+{
+   return {reinterpret_cast<uint8_t*>(const_cast<char*>(name.data())),
+           reinterpret_cast<uint8_t*>(const_cast<char*>(value.data())), name.size(), value.size(),
+           NGHTTP2_NV_FLAG_NONE};
+}
+
+/// Trampoline nghttp2 uses to pull outgoing body bytes; `source->ptr` is the Stream set up by
+/// handle_request()/Session::Impl::submit_request().
+nghttp2_ssize data_source_read_callback(nghttp2_session*, std::int32_t, std::uint8_t* buf,
+                                         std::size_t length, std::uint32_t* data_flags,
+                                         nghttp2_data_source* source, void*)
+{
+   auto* stream = static_cast<Stream*>(source->ptr);
+   return static_cast<nghttp2_ssize>(stream->producer_callback(buf, length, data_flags));
+}
+
 // -------------------------------------------------------------------------------------------------
 // nghttp2 callbacks
 //
-// None of these do any request handling yet -- that requires per-stream state (an equivalent of
-// anyhttp's NGHttp2Stream) that doesn't exist in this codebase yet. For now they just log what's
-// happening and let nghttp2 parse the connection according to the HTTP/2 protocol (SETTINGS, PING,
-// WINDOW_UPDATE, etc. are all handled internally by nghttp2 regardless of what callbacks are
-// registered).
+// These wire nghttp2's protocol-level events into the per-stream Stream objects (src/stream.cpp),
+// which bridge them to the coroutine-native StreamReader/StreamWriter. Header fields themselves
+// (beyond routing by stream ID/category) aren't captured anywhere yet -- server sessions run a
+// single hardcoded echo handler regardless of what was requested; a pluggable request-handler API
+// and a real headers API will come later.
 // -------------------------------------------------------------------------------------------------
 
-int on_begin_headers_callback(nghttp2_session*, const nghttp2_frame* frame, void*)
+int on_begin_headers_callback(nghttp2_session*, const nghttp2_frame* frame, void* user_data)
 {
    std::println("[{}] on_begin_headers_callback", frame->hd.stream_id);
+
+   // Only server sessions create a stream here: for a client session's response headers, the
+   // stream already exists (created by submit_request() before the request was even sent).
+   if (frame->hd.type == NGHTTP2_HEADERS && frame->headers.cat == NGHTTP2_HCAT_REQUEST)
+      static_cast<Session::Impl*>(user_data)->create_stream(frame->hd.stream_id);
+
    return 0;
 }
 
@@ -113,17 +142,41 @@ int on_invalid_header_callback(nghttp2_session*, const nghttp2_frame* frame, ngh
    return 0;
 }
 
-int on_frame_recv_callback(nghttp2_session*, const nghttp2_frame* frame, void*)
+int on_frame_recv_callback(nghttp2_session*, const nghttp2_frame* frame, void* user_data)
 {
    std::println("[{}] on_frame_recv_callback: {} length={} flags={}", frame->hd.stream_id,
                 frame_type_name(frame->hd.type), frame->hd.length, frame->hd.flags);
+
+   auto* session = static_cast<Session::Impl*>(user_data);
+
+   // Full request headers received: dispatch the (currently hardcoded) request handler.
+   if (frame->hd.type == NGHTTP2_HEADERS && frame->headers.cat == NGHTTP2_HCAT_REQUEST)
+      if (auto stream = session->find_stream(frame->hd.stream_id))
+         session->dispatch_request(std::move(stream));
+
+   // HEADERS or DATA carrying END_STREAM: the peer is done sending on this stream.
+   if ((frame->hd.type == NGHTTP2_HEADERS || frame->hd.type == NGHTTP2_DATA) &&
+       (frame->hd.flags & NGHTTP2_FLAG_END_STREAM))
+      if (auto stream = session->find_stream(frame->hd.stream_id))
+         stream->on_read_eof();
+
    return 0;
 }
 
-int on_data_chunk_recv_callback(nghttp2_session*, std::uint8_t, std::int32_t stream_id,
-                                 const uint8_t*, std::size_t len, void*)
+int on_data_chunk_recv_callback(nghttp2_session* raw_session, std::uint8_t, std::int32_t stream_id,
+                                 const uint8_t* data, std::size_t len, void* user_data)
 {
    std::println("[{}] on_data_chunk_recv_callback: {} bytes", stream_id, len);
+
+   // Connection-level flow control is replenished right away, regardless of whether the user has
+   // read the bytes yet; per-stream flow control is replenished only once Stream::consume() is
+   // called after the user actually reads them (see Stream::read_some()).
+   nghttp2_session_consume_connection(raw_session, len);
+
+   auto* session = static_cast<Session::Impl*>(user_data);
+   if (auto stream = session->find_stream(stream_id))
+      stream->on_data(data, len);
+
    return 0;
 }
 
@@ -135,12 +188,14 @@ int on_frame_send_callback(nghttp2_session*, const nghttp2_frame* frame, void*)
 }
 
 int on_stream_close_callback(nghttp2_session* session, std::int32_t stream_id,
-                              std::uint32_t error_code, void*)
+                              std::uint32_t error_code, void* user_data)
 {
    bool local_close = nghttp2_session_get_stream_local_close(session, stream_id);
    bool remote_close = nghttp2_session_get_stream_remote_close(session, stream_id);
    std::println("[{}] on_stream_close_callback: {} (local={}, remote={})", stream_id,
                 nghttp2_http2_strerror(error_code), local_close, remote_close);
+
+   static_cast<Session::Impl*>(user_data)->close_stream(stream_id);
    return 0;
 }
 
@@ -179,6 +234,11 @@ Session& Session::operator=(Session&&) noexcept = default;
 Session::~Session() = default;
 
 Session::executor_type Session::get_executor() const noexcept { return impl_->get_executor(); }
+
+boost::capy::io_task<Session::Writer, Session::Reader> Session::submit_request(std::string_view path)
+{
+   return impl_->submit_request(path);
+}
 
 // =================================================================================================
 
@@ -319,6 +379,110 @@ boost::capy::io_task<> Session::Impl::recv_loop()
 
    std::println("recv loop: done");
    co_return boost::capy::io_result<>{};
+}
+
+// -------------------------------------------------------------------------------------------------
+
+std::shared_ptr<Stream> Session::Impl::create_stream(std::int32_t id)
+{
+   auto stream = std::make_shared<Stream>(shared_from_this(), id);
+   streams_.emplace(id, stream);
+   return stream;
+}
+
+std::shared_ptr<Stream> Session::Impl::find_stream(std::int32_t id) const
+{
+   auto it = streams_.find(id);
+   return it != streams_.end() ? it->second : nullptr;
+}
+
+void Session::Impl::close_stream(std::int32_t id)
+{
+   auto it = streams_.find(id);
+   if (it == streams_.end())
+      return;
+
+   // Unblock anything still suspended in a read/write on this stream before dropping our own
+   // reference -- a StreamReader/StreamWriter held by the user (or by handle_request()'s own
+   // coroutine frame) can keep the Stream alive past this point regardless.
+   it->second->on_close();
+   streams_.erase(it);
+}
+
+void Session::Impl::dispatch_request(std::shared_ptr<Stream> stream)
+{
+   boost::capy::run_async(executor_)(handle_request(std::move(stream)));
+}
+
+// -------------------------------------------------------------------------------------------------
+
+boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream)
+{
+   auto self = shared_from_this(); // keep the session alive for the duration of the coroutine
+
+   std::string body;
+   StreamReader reader(stream);
+   if (auto [ec, n] = co_await boost::capy::read(reader, boost::capy::dynamic_buffer(body)); ec)
+   {
+      std::println("[{}] handle_request: error reading body: {}", stream->id(), ec.message());
+      co_return;
+   }
+   std::println("[{}] handle_request: echoing {} bytes back", stream->id(), body.size());
+
+   nghttp2_nv nva[]{make_nv(":status", "200")};
+   nghttp2_data_provider2 prd{.source = {.ptr = stream.get()}, .read_callback = data_source_read_callback};
+   if (nghttp2_submit_response2(session_, stream->id(), nva, 1, &prd))
+   {
+      std::println("[{}] handle_request: nghttp2_submit_response2 failed", stream->id());
+      co_return;
+   }
+   start_write();
+
+   StreamWriter writer(stream);
+   auto [ec, n] = co_await writer.write_eof(boost::capy::const_buffer(body.data(), body.size()));
+   if (ec)
+      std::println("[{}] handle_request: error writing response: {}", stream->id(), ec.message());
+}
+
+// -------------------------------------------------------------------------------------------------
+
+boost::capy::io_task<Session::Writer, Session::Reader> Session::Impl::submit_request(
+   std::string_view path)
+{
+   if (role_ != Role::client)
+      co_return {std::make_error_code(std::errc::operation_not_permitted), Session::Writer{},
+                 Session::Reader{}};
+
+   // Placeholder stream ID: nghttp2_submit_request2() below assigns the real one, and we need
+   // *some* object to hand it as the data provider's source before that happens.
+   auto stream = std::make_shared<Stream>(shared_from_this(), 0);
+
+   nghttp2_data_provider2 prd{.source = {.ptr = stream.get()}, .read_callback = data_source_read_callback};
+   std::string path_str(path);
+   nghttp2_nv nva[]{
+      make_nv(":method", "POST"),
+      make_nv(":scheme", "http"),
+      make_nv(":path", path_str),
+      make_nv(":authority", "localhost"),
+   };
+
+   auto id = nghttp2_submit_request2(session_, nullptr, nva, std::size(nva), &prd, stream.get());
+   if (id < 0)
+   {
+      std::println("submit_request: nghttp2_submit_request2 failed: {}", nghttp2_strerror(id));
+      co_return {std::make_error_code(std::errc::invalid_argument), Session::Writer{},
+                 Session::Reader{}};
+   }
+
+   // nghttp2 now holds `stream.get()` as the data provider's source, so fix up its ID in place
+   // rather than swapping in a different object.
+   stream->set_id(id);
+   streams_.emplace(id, stream);
+   start_write();
+
+   std::println("[{}] submit_request: {}", id, path);
+   co_return {std::error_code{}, Session::Writer(StreamWriter(stream)),
+              Session::Reader(StreamReader(stream))};
 }
 
 // =================================================================================================
