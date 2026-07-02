@@ -1,3 +1,5 @@
+#include "utils.hpp"
+
 #include <nghttp2-corosio/server.hpp>
 
 #include <nghttp2/nghttp2.h>
@@ -146,7 +148,9 @@ protected:
       // test binary, and every test gets a fresh instance on its own ephemeral port) lets these
       // tests exercise the real wire protocol without hitting that race.
       server_ = new nghttp2_corosio::Server(config);
-      std::thread([server = server_] { server->run(); }).detach();
+      std::thread([server = server_]
+                   { nghttp2_corosio_test::run(server->get_executor().context()); })
+         .detach();
    }
 
    std::uint16_t port() const { return server_->local_endpoint().port(); }

@@ -8,6 +8,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(nghttp2-corosio-tests
     test_client.cpp
     test_server.cpp
+    utils.cpp
 )
 
 target_link_libraries(nghttp2-corosio-tests

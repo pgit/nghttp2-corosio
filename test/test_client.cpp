@@ -1,3 +1,5 @@
+#include "utils.hpp"
+
 #include <nghttp2-corosio/client.hpp>
 #include <nghttp2-corosio/server.hpp>
 
@@ -38,7 +40,7 @@ TEST(ClientTest, ConnectsToServer)
          connected = !ec && session;
       }());
 
-   std::thread([server] { server->run(); }).detach();
+   std::thread([server] { nghttp2_corosio_test::run(server->get_executor().context()); }).detach();
 
    // Give both sides -- the client's connect and its subsequent session, and the server's accept
    // and its own session -- a moment to run the handshake to completion.
@@ -85,7 +87,7 @@ TEST(ClientTest, EchoesRequestBody)
          done = true;
       }());
 
-   std::thread([server] { server->run(); }).detach();
+   std::thread([server] { nghttp2_corosio_test::run(server->get_executor().context()); }).detach();
 
    for (int i = 0; i < 100 && !done; ++i)
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
