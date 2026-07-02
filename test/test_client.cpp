@@ -1,3 +1,4 @@
+#include "boost/capy/ex/this_coro.hpp"
 #include "utils.hpp"
 
 #include <nghttp2-corosio/client.hpp>
@@ -41,6 +42,45 @@ boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
    [[maybe_unused]] auto result = co_await response.write_eof();
 }
 
+// Free coroutines rather than capturing lambdas: a capturing lambda that is a coroutine and gets
+// invoked as a temporary (`[...]() -> task<>{...}()`) dangles as soon as the coroutine suspends
+// past the statement's end -- captures live in the closure object, and the coroutine frame only
+// keeps a pointer back to it. Plain functions have no such temporary to outlive.
+boost::capy::task<> connect_to_server(nghttp2_corosio::Server::executor_type executor,
+                                      std::uint16_t port, std::atomic<bool>& connected)
+{
+   auto ep = boost::corosio::endpoint(boost::corosio::ipv4_address("127.0.0.1"), port);
+   nghttp2_corosio::Client client(executor);
+   auto [ec, session] = co_await client.connect(ep);
+   connected = !ec && session;
+}
+
+boost::capy::task<> echo_request(std::uint16_t port, std::string_view payload, std::string& echoed,
+                                 bool& ok, std::atomic<bool>& done)
+{
+   auto ex = co_await boost::capy::this_coro::executor;
+   auto ep = boost::corosio::endpoint(boost::corosio::ipv4_address("127.0.0.1"), port);
+   nghttp2_corosio::Client client(ex);
+   auto [ec, session] = co_await client.connect(ep);
+   if (ec)
+   {
+      done = true;
+      co_return;
+   }
+
+   auto [sec, writer, reader] = co_await session.submit_request("/echo");
+   if (sec)
+   {
+      done = true;
+      co_return;
+   }
+
+   auto [wec, wn] = co_await writer.write_eof(boost::capy::make_buffer(payload));
+   auto [rec, rn] = co_await boost::capy::read(reader, boost::capy::dynamic_buffer(echoed));
+   ok = !wec && !rec;
+   done = true;
+}
+
 } // namespace
 
 namespace
@@ -58,13 +98,7 @@ TEST(ClientTest, ConnectsToServer)
 
    std::atomic<bool> connected = false;
    boost::capy::run_async(server->get_executor())(
-      [&, server]() -> boost::capy::task<>
-      {
-         auto ep = boost::corosio::endpoint(boost::corosio::ipv4_address("127.0.0.1"), port);
-         nghttp2_corosio::Client client(server->get_executor());
-         auto [ec, session] = co_await client.connect(ep);
-         connected = !ec && session;
-      }());
+      connect_to_server(server->get_executor(), port, connected));
 
    std::thread([server] { nghttp2_corosio_test::run(server->get_executor().context()); }).detach();
 
@@ -89,30 +123,7 @@ TEST(ClientTest, EchoesRequestBody)
    bool ok = false;
    std::atomic<bool> done = false;
 
-   boost::capy::run_async(server->get_executor())(
-      [&, server]() -> boost::capy::task<>
-      {
-         auto ep = boost::corosio::endpoint(boost::corosio::ipv4_address("127.0.0.1"), port);
-         nghttp2_corosio::Client client(server->get_executor());
-         auto [ec, session] = co_await client.connect(ep);
-         if (ec)
-         {
-            done = true;
-            co_return;
-         }
-
-         auto [sec, writer, reader] = co_await session.submit_request("/echo");
-         if (sec)
-         {
-            done = true;
-            co_return;
-         }
-
-         auto [wec, wn] = co_await writer.write_eof(boost::capy::make_buffer(payload));
-         auto [rec, rn] = co_await boost::capy::read(reader, boost::capy::dynamic_buffer(echoed));
-         ok = !wec && !rec;
-         done = true;
-      }());
+   boost::capy::run_async(server->get_executor())(echo_request(port, payload, echoed, ok, done));
 
    std::thread([server] { nghttp2_corosio_test::run(server->get_executor().context()); }).detach();
 
