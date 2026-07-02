@@ -37,7 +37,7 @@ boost::capy::io_task<Session> Client::Impl::connect(boost::corosio::endpoint ep)
 
    boost::capy::any_stream stream(std::move(socket));
    auto session = std::make_shared<Session::Impl>(executor_, std::move(stream),
-                                                   Session::Impl::Role::client, RequestHandler{});
+                                                  Session::Impl::Role::client, RequestHandler{});
    boost::capy::run_async(executor_)(session->run());
 
    co_return {std::error_code{}, Session(std::move(session))};

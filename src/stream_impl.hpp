@@ -103,7 +103,8 @@ public:
    /// nghttp2_submit_request2()/nghttp2_submit_response2(), when it wants more body bytes for a
    /// DATA frame. Returns NGHTTP2_ERR_DEFERRED (as a plain std::ptrdiff_t, to avoid needing
    /// nghttp2.h in this header) if nothing has been written yet.
-   std::ptrdiff_t producer_callback(std::uint8_t* buf, std::size_t length, std::uint32_t* data_flags);
+   std::ptrdiff_t producer_callback(std::uint8_t* buf, std::size_t length,
+                                    std::uint32_t* data_flags);
 
    template <boost::capy::ConstBufferSequence CB>
    boost::capy::io_task<std::size_t> write_some(CB buffers)
@@ -140,8 +141,8 @@ private:
          co_return {boost::capy::make_error_code(boost::capy::error::eof), 0};
 
       pending_write_.resize(boost::capy::buffer_size(buffers));
-      boost::capy::buffer_copy(boost::capy::mutable_buffer(pending_write_.data(), pending_write_.size()),
-                                buffers);
+      boost::capy::buffer_copy(
+         boost::capy::mutable_buffer(pending_write_.data(), pending_write_.size()), buffers);
       write_offset_ = 0;
       write_eof_requested_ = eof;
       write_pending_ = true;

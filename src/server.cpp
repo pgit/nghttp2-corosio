@@ -1,5 +1,5 @@
-#include "nghttp2-corosio/logging.hpp"
 #include "nghttp2-corosio/server.hpp"
+#include "nghttp2-corosio/logging.hpp"
 #include "server_impl.hpp"
 #include "session_impl.hpp"
 
@@ -16,8 +16,8 @@ namespace nghttp2_corosio
 // =================================================================================================
 
 Server::Impl::Impl(Config config)
-   : config_(std::move(config))
-   , acceptor_(ioc_, boost::corosio::endpoint(boost::corosio::ipv6_address(config_.listen_address),
+   : config_(std::move(config)),
+     acceptor_(ioc_, boost::corosio::endpoint(boost::corosio::ipv6_address(config_.listen_address),
                                               config_.port))
 {
 }
@@ -54,17 +54,14 @@ boost::capy::task<> Server::Impl::accept_loop()
       boost::capy::any_stream stream(std::move(peer));
 
       auto session = std::make_shared<Session::Impl>(ioc_.get_executor(), std::move(stream),
-                                                      Session::Impl::Role::server, config_.handler);
+                                                     Session::Impl::Role::server, config_.handler);
       boost::capy::run_async(ioc_.get_executor())(session->run());
    }
 }
 
 // =================================================================================================
 
-Server::Server(Config config) : impl_(std::make_shared<Impl>(std::move(config)))
-{
-   impl_->start();
-}
+Server::Server(Config config) : impl_(std::make_shared<Impl>(std::move(config))) { impl_->start(); }
 
 Server::Server(Server&&) noexcept = default;
 Server& Server::operator=(Server&&) noexcept = default;

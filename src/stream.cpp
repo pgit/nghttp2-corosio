@@ -42,7 +42,7 @@ void Stream::consume(std::size_t n)
 // -------------------------------------------------------------------------------------------------
 
 std::ptrdiff_t Stream::producer_callback(std::uint8_t* buf, std::size_t length,
-                                          std::uint32_t* data_flags)
+                                         std::uint32_t* data_flags)
 {
    if (!write_pending_)
    {

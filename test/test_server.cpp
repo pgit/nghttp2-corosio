@@ -45,8 +45,7 @@ public:
       addr.sin_port = htons(port);
       ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
-      connected_ =
-         ::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+      connected_ = ::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
    }
 
    ~RawClient()
@@ -113,19 +112,20 @@ std::optional<FrameHeader> read_frame_header(RawClient& client)
    if (bytes.size() != 9)
       return std::nullopt;
 
-   return FrameHeader{
-      .length = (static_cast<std::uint32_t>(bytes[0]) << 16) |
-                (static_cast<std::uint32_t>(bytes[1]) << 8) | bytes[2],
-      .type = bytes[3],
-      .flags = bytes[4],
-      .stream_id = static_cast<std::int32_t>(
-         ((bytes[5] & 0x7Fu) << 24) | (bytes[6] << 16) | (bytes[7] << 8) | bytes[8])};
+   return FrameHeader{.length = (static_cast<std::uint32_t>(bytes[0]) << 16) |
+                                (static_cast<std::uint32_t>(bytes[1]) << 8) | bytes[2],
+                      .type = bytes[3],
+                      .flags = bytes[4],
+                      .stream_id =
+                         static_cast<std::int32_t>(((bytes[5] & 0x7Fu) << 24) | (bytes[6] << 16) |
+                                                   (bytes[7] << 8) | bytes[8])};
 }
 
 constexpr std::string_view kClientPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 // An empty SETTINGS frame: 9-byte header (length=0, type=SETTINGS, flags=0, stream=0), no payload.
-constexpr std::array<std::uint8_t, 9> kEmptyClientSettings{0, 0, 0, NGHTTP2_SETTINGS, 0, 0, 0, 0, 0};
+constexpr std::array<std::uint8_t, 9> kEmptyClientSettings{0, 0, 0, NGHTTP2_SETTINGS, 0, 0,
+                                                           0, 0, 0};
 
 // =================================================================================================
 
@@ -148,9 +148,9 @@ protected:
       // test binary, and every test gets a fresh instance on its own ephemeral port) lets these
       // tests exercise the real wire protocol without hitting that race.
       server_ = new nghttp2_corosio::Server(config);
-      std::thread([server = server_]
-                   { nghttp2_corosio_test::run(server->get_executor().context()); })
-         .detach();
+      std::thread([server = server_] {
+         nghttp2_corosio_test::run(server->get_executor().context());
+      }).detach();
    }
 
    std::uint16_t port() const { return server_->local_endpoint().port(); }
