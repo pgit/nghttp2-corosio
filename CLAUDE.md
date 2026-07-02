@@ -90,3 +90,9 @@ reproduced with a minimal example that doesn't touch nghttp2 at all. When missed
 coroutine and socket leak, and destroying the owning `Server`/`Client` afterward can hang or corrupt
 memory. See the comment on `Session::Impl::send_loop()`. Until it's fixed upstream, tests sidestep it
 by deliberately leaking each test's `Server` (`new`, never `delete`d) instead of tearing it down.
+
+### Coding Conventions
+
+#### Formatting
+
+Mandatory `clang-format`. Editor width: 100. Occasional horizontal rulers. Doxygen comments. Prefer `/** ... */` for longer explanations. Always use `//` inside code, even for multiple lines.
