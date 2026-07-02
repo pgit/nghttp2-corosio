@@ -1,5 +1,5 @@
-#include "nghttp2-corosio/logging.hpp"
 #include "nghttp2-corosio/session.hpp"
+#include "nghttp2-corosio/logging.hpp"
 #include "session_impl.hpp"
 #include "stream_impl.hpp"
 
@@ -82,8 +82,8 @@ nghttp2_nv make_nv(std::string_view name, std::string_view value)
 /// Trampoline nghttp2 uses to pull outgoing body bytes; `source->ptr` is the Stream set up by
 /// handle_request()/Session::Impl::submit_request().
 nghttp2_ssize data_source_read_callback(nghttp2_session*, std::int32_t, std::uint8_t* buf,
-                                         std::size_t length, std::uint32_t* data_flags,
-                                         nghttp2_data_source* source, void*)
+                                        std::size_t length, std::uint32_t* data_flags,
+                                        nghttp2_data_source* source, void*)
 {
    auto* stream = static_cast<Stream*>(source->ptr);
    return static_cast<nghttp2_ssize>(stream->producer_callback(buf, length, data_flags));
@@ -111,8 +111,8 @@ int on_begin_headers_callback(nghttp2_session*, const nghttp2_frame* frame, void
 }
 
 int on_header_callback(nghttp2_session*, const nghttp2_frame* frame, const uint8_t* name,
-                        std::size_t namelen, const uint8_t* value, std::size_t valuelen,
-                        std::uint8_t, void* user_data)
+                       std::size_t namelen, const uint8_t* value, std::size_t valuelen,
+                       std::uint8_t, void* user_data)
 {
    auto name_sv = to_string_view(name, namelen);
    auto value_sv = to_string_view(value, valuelen);
@@ -126,7 +126,7 @@ int on_header_callback(nghttp2_session*, const nghttp2_frame* frame, const uint8
 }
 
 int on_frame_not_send_callback(nghttp2_session*, const nghttp2_frame* frame, int lib_error_code,
-                                void*)
+                               void*)
 {
    logw("[{}] on_frame_not_send_callback: {} {}", frame->hd.stream_id,
         frame_type_name(frame->hd.type), nghttp2_strerror(lib_error_code));
@@ -140,7 +140,7 @@ int on_error_callback(nghttp2_session*, int, const char* msg, std::size_t len, v
 }
 
 int on_invalid_header_callback(nghttp2_session*, const nghttp2_frame* frame, nghttp2_rcbuf* name,
-                                nghttp2_rcbuf* value, std::uint8_t, void*)
+                               nghttp2_rcbuf* value, std::uint8_t, void*)
 {
    logw("[{}] on_invalid_header_callback: {}: {}", frame->hd.stream_id, to_string_view(name),
         to_string_view(value));
@@ -169,7 +169,7 @@ int on_frame_recv_callback(nghttp2_session*, const nghttp2_frame* frame, void* u
 }
 
 int on_data_chunk_recv_callback(nghttp2_session* raw_session, std::uint8_t, std::int32_t stream_id,
-                                 const uint8_t* data, std::size_t len, void* user_data)
+                                const uint8_t* data, std::size_t len, void* user_data)
 {
    logd("[{}] on_data_chunk_recv_callback: {} bytes", stream_id, len);
 
@@ -193,7 +193,7 @@ int on_frame_send_callback(nghttp2_session*, const nghttp2_frame* frame, void*)
 }
 
 int on_stream_close_callback(nghttp2_session* session, std::int32_t stream_id,
-                              std::uint32_t error_code, void* user_data)
+                             std::uint32_t error_code, void* user_data)
 {
    bool local_close = nghttp2_session_get_stream_local_close(session, stream_id);
    bool remote_close = nghttp2_session_get_stream_remote_close(session, stream_id);
@@ -240,7 +240,8 @@ Session::~Session() = default;
 
 Session::executor_type Session::get_executor() const noexcept { return impl_->get_executor(); }
 
-boost::capy::io_task<Session::Writer, Session::Reader> Session::submit_request(std::string_view path)
+boost::capy::io_task<Session::Writer, Session::Reader>
+Session::submit_request(std::string_view path)
 {
    return impl_->submit_request(path);
 }
@@ -263,7 +264,7 @@ boost::capy::task<> Session::Impl::run()
    if (nghttp2_option_new(&raw_options))
       throw std::runtime_error("nghttp2_option_new failed");
    std::unique_ptr<nghttp2_option, void (*)(nghttp2_option*)> options(raw_options,
-                                                                       &nghttp2_option_del);
+                                                                      &nghttp2_option_del);
 
    // We'll be submitting WINDOW_UPDATE ourselves once flow control is implemented, so disable
    // nghttp2's automatic ones now to avoid the two fighting later. See nghttp2/nghttp2#446.
@@ -275,7 +276,7 @@ boost::capy::task<> Session::Impl::run()
                : nghttp2_session_client_new2(&session_, callbacks.get(), this, options.get());
    if (rv)
       throw std::runtime_error(role_ == Role::server ? "nghttp2_session_server_new2 failed"
-                                                       : "nghttp2_session_client_new2 failed");
+                                                     : "nghttp2_session_client_new2 failed");
 
    logi("session created ({})", role_ == Role::server ? "server" : "client");
 
@@ -425,17 +426,10 @@ boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream
 {
    auto self = shared_from_this(); // keep the session alive for the duration of the coroutine
 
-   nghttp2_nv nva[]{make_nv(":status", "200")};
-   nghttp2_data_provider2 prd{.source = {.ptr = stream.get()}, .read_callback = data_source_read_callback};
-   if (nghttp2_submit_response2(session_, stream->id(), nva, 1, &prd))
-   {
-      loge("[{}] handle_request: nghttp2_submit_response2 failed", stream->id());
-      co_return;
-   }
-   start_write();
-
    Session::Request request(stream->path(), Session::Reader(StreamReader(stream)));
-   Session::Writer response{StreamWriter(stream)};
+   Session::Response response{Session::Writer(StreamWriter(stream)),
+                              [self, stream](unsigned int status, const Session::Headers& headers)
+   { return self->submit_response(stream, status, headers); }};
 
    if (handler_)
    {
@@ -450,8 +444,32 @@ boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream
 
 // -------------------------------------------------------------------------------------------------
 
-boost::capy::io_task<Session::Writer, Session::Reader> Session::Impl::submit_request(
-   std::string_view path)
+boost::capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> stream,
+                                                      unsigned int status,
+                                                      const Session::Headers& headers)
+{
+   auto status_str = std::to_string(status);
+   std::vector<nghttp2_nv> nva;
+   nva.reserve(1 + headers.size());
+   nva.push_back(make_nv(":status", status_str));
+   for (const auto& [name, value] : headers)
+      nva.push_back(make_nv(name, value));
+
+   nghttp2_data_provider2 prd{.source = {.ptr = stream.get()},
+                              .read_callback = data_source_read_callback};
+   if (nghttp2_submit_response2(session_, stream->id(), nva.data(), nva.size(), &prd))
+   {
+      loge("[{}] submit_response: nghttp2_submit_response2 failed", stream->id());
+      co_return boost::capy::io_result<>{std::make_error_code(std::errc::invalid_argument)};
+   }
+   start_write();
+   co_return boost::capy::io_result<>{};
+}
+
+// -------------------------------------------------------------------------------------------------
+
+boost::capy::io_task<Session::Writer, Session::Reader>
+Session::Impl::submit_request(std::string_view path)
 {
    if (role_ != Role::client)
       co_return {std::make_error_code(std::errc::operation_not_permitted), Session::Writer{},
@@ -461,7 +479,8 @@ boost::capy::io_task<Session::Writer, Session::Reader> Session::Impl::submit_req
    // *some* object to hand it as the data provider's source before that happens.
    auto stream = std::make_shared<Stream>(shared_from_this(), 0);
 
-   nghttp2_data_provider2 prd{.source = {.ptr = stream.get()}, .read_callback = data_source_read_callback};
+   nghttp2_data_provider2 prd{.source = {.ptr = stream.get()},
+                              .read_callback = data_source_read_callback};
    std::string path_str(path);
    nghttp2_nv nva[]{
       make_nv(":method", "POST"),

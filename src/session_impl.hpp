@@ -75,6 +75,11 @@ public:
    /// Spawns (detached) handle_request() for a newly-arrived request.
    void dispatch_request(std::shared_ptr<Stream> stream);
 
+   /// Submits the response HEADERS frame (`:status` plus `headers`) for `stream`, wiring up its
+   /// data provider. Called lazily by Session::Response -- see handle_request().
+   boost::capy::io_task<> submit_response(std::shared_ptr<Stream> stream, unsigned int status,
+                                          const Session::Headers& headers);
+
 private:
    /// Repeatedly pulls pending output out of nghttp2 (nghttp2_session_mem_send2) and writes it to
    /// the stream, coalescing small chunks into fewer writes. Suspends on `write_ready_` once
@@ -94,8 +99,9 @@ private:
    /// stream errors or nghttp2 wants neither to read nor write.
    boost::capy::io_task<> recv_loop();
 
-   /// Submits the response (fixed 200 status) for a newly-arrived request, then hands its
-   /// Reader/Writer to `handler_` (if set; otherwise the response body is just closed empty).
+   /// Builds a Request/Response pair for a newly-arrived request and hands them to `handler_` (if
+   /// set; otherwise the response is just closed empty). The response isn't submitted here -- see
+   /// Session::Response -- so the handler can set a status/headers before its first write.
    /// Spawned (detached) per request by the HEADERS/REQUEST case in on_frame_recv_callback().
    boost::capy::task<> handle_request(std::shared_ptr<Stream> stream);
 

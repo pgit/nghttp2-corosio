@@ -22,7 +22,8 @@ namespace
 {
 
 // Same shape as server_main.cpp's echo handler: streams the request body straight back.
-boost::capy::task<> echo(nghttp2_corosio::Session::Request request, nghttp2_corosio::Session::Writer response)
+boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
+                         nghttp2_corosio::Session::Response response)
 {
    std::array<std::uint8_t, 64 * 1024> buffer;
    for (;;)

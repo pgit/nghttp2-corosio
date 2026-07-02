@@ -18,11 +18,11 @@ namespace nghttp2_corosio
 
 /// Handles every incoming request on the server -- there's no built-in routing, so a handler that
 /// wants to do different things for different paths inspects `request.path()` itself and muxes
-/// accordingly. The framework submits the response headers (a fixed 200 status; there's no way to
-/// customize that or add other headers yet) before running this, so a handler can start writing
-/// immediately -- see server_main.cpp for a streaming echo handler.
+/// accordingly. `response` starts out as an unsubmitted 200 with no extra headers; a handler that
+/// wants to customize either calls `response.status()`/`response.set()` before its first write (or
+/// an explicit `response.submit()`) -- see server_main.cpp for a streaming echo handler.
 using RequestHandler =
-   std::function<boost::capy::task<>(Session::Request request, Session::Writer response)>;
+   std::function<boost::capy::task<>(Session::Request request, Session::Response response)>;
 
 // =================================================================================================
 

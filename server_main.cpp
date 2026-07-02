@@ -15,9 +15,11 @@ namespace
 // Streaming echo, the same shape as anyhttp's request_handlers.cpp::echo(): read a chunk, write it
 // straight back, repeat until the request body ends. Registered for every path (there's no routing
 // yet), but meant to be hit at /echo.
-boost::capy::task<> echo(nghttp2_corosio::Session::Request request, nghttp2_corosio::Session::Writer response)
+boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
+                         nghttp2_corosio::Session::Response response)
 {
    logd("[{}] echo: streaming request body back", request.path());
+   response.set("content-type", "application/octet-stream");
 
    std::array<std::uint8_t, 64 * 1024> buffer;
    for (;;)
@@ -47,7 +49,8 @@ nghttp2_corosio::LogLevel parse_log_level(std::string_view name)
       return nghttp2_corosio::LogLevel::error;
    if (name == "off")
       return nghttp2_corosio::LogLevel::off;
-   throw std::invalid_argument(std::format("unknown log level '{}' (want debug/info/warn/error/off)", name));
+   throw std::invalid_argument(
+      std::format("unknown log level '{}' (want debug/info/warn/error/off)", name));
 }
 
 } // namespace
@@ -62,7 +65,8 @@ int main(int argc, char* argv[])
    config.handler = echo;
 
    nghttp2_corosio::Server server(config);
-   std::println("Try: curl --http2-prior-knowledge --data-binary @somefile http://localhost:{}/echo",
-                server.local_endpoint().port());
+   std::println(
+      "Try: curl --http2-prior-knowledge --data-binary @somefile http://localhost:{}/echo",
+      server.local_endpoint().port());
    server.run();
 }
