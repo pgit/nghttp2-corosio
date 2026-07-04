@@ -54,6 +54,27 @@ public:
    void set_path(std::string path) { path_ = std::move(path); }
    const std::string& path() const noexcept { return path_; }
 
+   /// Set by on_header_callback() as the :status pseudo-header arrives (client sessions only,
+   /// on the response HEADERS frame). Wakes anything suspended in status().
+   void set_status(unsigned int status) noexcept
+   {
+      status_ = static_cast<int>(status);
+      status_ready_.set();
+   }
+
+   /// Waits for the response's :status pseudo-header to arrive, or returns immediately if it
+   /// already has.
+   boost::capy::io_task<unsigned int> status()
+   {
+      if (status_ < 0)
+      {
+         status_ready_.clear();
+         if (auto [ec] = co_await status_ready_.wait(); ec)
+            co_return {ec, 0u};
+      }
+      co_return {{}, static_cast<unsigned int>(status_)};
+   }
+
    // ----------------------------------------------------------------------------------------------
    // Read side, fed by on_data_chunk_recv_callback() and END_STREAM detection in
    // on_frame_recv_callback(). Consumers see this through StreamReader's read_some()/read().
@@ -166,6 +187,10 @@ private:
    std::int32_t id_;
    bool closed_ = false;
    std::string path_;
+
+   // response status (client sessions only)
+   int status_ = -1;
+   boost::capy::async_event status_ready_;
 
    // read side
    std::vector<std::uint8_t> read_buffer_;

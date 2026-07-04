@@ -13,6 +13,7 @@
 #include <nghttp2/nghttp2.h>
 
 #include <array>
+#include <charconv>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -119,8 +120,17 @@ int on_header_callback(nghttp2_session*, const nghttp2_frame* frame, const uint8
    logd("[{}] {}: {}", frame->hd.stream_id, name_sv, value_sv);
 
    if (name_sv == ":path")
+   {
       if (auto stream = static_cast<Session::Impl*>(user_data)->find_stream(frame->hd.stream_id))
          stream->set_path(std::string(value_sv));
+   }
+   else if (name_sv == ":status")
+   {
+      unsigned int status = 0;
+      std::from_chars(value_sv.data(), value_sv.data() + value_sv.size(), status);
+      if (auto stream = static_cast<Session::Impl*>(user_data)->find_stream(frame->hd.stream_id))
+         stream->set_status(status);
+   }
 
    return 0;
 }
@@ -240,7 +250,7 @@ Session::~Session() = default;
 
 Session::executor_type Session::get_executor() const noexcept { return impl_->get_executor(); }
 
-boost::capy::io_task<Session::Writer, Session::Reader>
+boost::capy::io_task<Session::Writer, Session::ClientResponse>
 Session::submit_request(std::string_view path)
 {
    return impl_->submit_request(path);
@@ -468,12 +478,12 @@ boost::capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> st
 
 // -------------------------------------------------------------------------------------------------
 
-boost::capy::io_task<Session::Writer, Session::Reader>
+boost::capy::io_task<Session::Writer, Session::ClientResponse>
 Session::Impl::submit_request(std::string_view path)
 {
    if (role_ != Role::client)
       co_return {std::make_error_code(std::errc::operation_not_permitted), Session::Writer{},
-                 Session::Reader{}};
+                 Session::ClientResponse{Session::Reader{}, {}}};
 
    // Placeholder stream ID: nghttp2_submit_request2() below assigns the real one, and we need
    // *some* object to hand it as the data provider's source before that happens.
@@ -494,7 +504,7 @@ Session::Impl::submit_request(std::string_view path)
    {
       loge("submit_request: nghttp2_submit_request2 failed: {}", nghttp2_strerror(id));
       co_return {std::make_error_code(std::errc::invalid_argument), Session::Writer{},
-                 Session::Reader{}};
+                 Session::ClientResponse{Session::Reader{}, {}}};
    }
 
    // nghttp2 now holds `stream.get()` as the data provider's source, so fix up its ID in place
@@ -505,7 +515,8 @@ Session::Impl::submit_request(std::string_view path)
 
    logi("[{}] submit_request: {}", id, path);
    co_return {std::error_code{}, Session::Writer(StreamWriter(stream)),
-              Session::Reader(StreamReader(stream))};
+              Session::ClientResponse(Session::Reader(StreamReader(stream)),
+                                      [stream] { return stream->status(); })};
 }
 
 // =================================================================================================

@@ -66,7 +66,8 @@ public:
    void start_write() { write_ready_.set(); }
 
    /// Submits a request on a new stream (client sessions only). See Session::submit_request().
-   boost::capy::io_task<Session::Writer, Session::Reader> submit_request(std::string_view path);
+   boost::capy::io_task<Session::Writer, Session::ClientResponse>
+   submit_request(std::string_view path);
 
    std::shared_ptr<Stream> create_stream(std::int32_t id);
    std::shared_ptr<Stream> find_stream(std::int32_t id) const;

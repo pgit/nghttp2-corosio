@@ -66,6 +66,42 @@ public:
       Reader reader_;
    };
 
+   /// The incoming response on a client session: an asynchronously-arriving `:status`
+   /// pseudo-header plus the response body. ClientResponse forwards read_some()/read() to the
+   /// body, so it can be used directly wherever a Reader is expected.
+   class ClientResponse
+   {
+   public:
+      /// Waits for the `:status` pseudo-header to arrive; constructed by Session::Impl, which is
+      /// the only thing that knows how to ask the underlying Stream.
+      using StatusFn = std::function<boost::capy::io_task<unsigned int>()>;
+
+      ClientResponse(Reader reader, StatusFn status)
+         : reader_(std::move(reader)), status_(std::move(status))
+      {
+      }
+
+      /// Waits for the response's `:status` pseudo-header to arrive. Safe to call more than
+      /// once -- returns immediately once the status has already been captured.
+      boost::capy::io_task<unsigned int> status() { return status_(); }
+
+      template <boost::capy::MutableBufferSequence MB>
+      auto read_some(MB buffers)
+      {
+         return reader_.read_some(buffers);
+      }
+
+      template <boost::capy::MutableBufferSequence MB>
+      boost::capy::io_task<std::size_t> read(MB buffers)
+      {
+         return reader_.read(buffers);
+      }
+
+   private:
+      Reader reader_;
+      StatusFn status_;
+   };
+
    /// The outgoing response on a server session: a status code and headers, settable up until the
    /// response is submitted, plus the response body. Response forwards write_some()/write()/
    /// write_eof() to the body, so it can be used directly wherever a Writer is expected.
@@ -156,10 +192,10 @@ public:
    executor_type get_executor() const noexcept;
 
    /// Submits a request on a new stream (client sessions only) and returns a Writer for the
-   /// request body and a Reader for the response body. Pseudo-headers beyond :method/:path are
-   /// currently fixed (POST, http, an authority derived from the peer endpoint) -- a real headers
-   /// API will come later.
-   boost::capy::io_task<Writer, Reader> submit_request(std::string_view path);
+   /// request body and a ClientResponse for the response. Pseudo-headers beyond :method/:path
+   /// are currently fixed (POST, http, an authority derived from the peer endpoint) -- a real
+   /// headers API will come later.
+   boost::capy::io_task<Writer, ClientResponse> submit_request(std::string_view path);
 
 private:
    std::shared_ptr<Impl> impl_;
