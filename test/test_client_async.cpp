@@ -21,6 +21,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -28,6 +29,7 @@
 #include <functional>
 #include <random>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -126,8 +128,8 @@ protected:
          done_ = true;
       })(run_client(std::move(test_fn)));
 
-      for (int i = 0; i < 250 && !done_; ++i)
-         std::this_thread::sleep_for(20ms);
+      for (int i = 0; i < 2500 && !done_; ++i)
+          std::this_thread::sleep_for(20ms);
 
       ASSERT_TRUE(done_.load()) << "test did not complete in time";
       if (error_)
@@ -150,9 +152,11 @@ TEST_F(ClientAsync, PostData_ReceivesEcho)
       auto [ec, writer, response] = co_await session.submit_request("/echo");
       EXPECT_FALSE(ec);
 
-      constexpr std::size_t bytes = 1024;
+      constexpr std::size_t bytes = 1024 * 1024;
+      static constexpr std::array<std::uint8_t, bytes> data{};
       auto [wec, sent, received] = co_await boost::capy::when_all(
-         nghttp2_corosio_test::send(writer, bytes), nghttp2_corosio_test::count(response));
+         nghttp2_corosio_test::sendAndForceEOF(writer, std::span<const std::uint8_t>(data)),
+         nghttp2_corosio_test::count(response));
       EXPECT_FALSE(wec);
       EXPECT_EQ(received, bytes);
    });

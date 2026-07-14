@@ -81,8 +81,9 @@ template <ByteRange Range>
    requires std::ranges::contiguous_range<Range>
 boost::capy::io_task<> send(Session::Writer& writer, Range range)
 {
-   co_return co_await writer.write(
+   auto [ec, written] = co_await writer.write(
       boost::capy::make_buffer(std::ranges::data(range), std::ranges::size(range)));
+   co_return {ec};
 }
 
 /// A non-contiguous byte range (e.g. a `std::views::iota` generator) has to be copied into a

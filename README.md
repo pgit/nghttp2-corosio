@@ -20,6 +20,28 @@ cmake --build build
 This also builds and runs a small GoogleTest suite (`test/`); run it directly via
 `./build/test/nghttp2-corosio-tests` or through `ctest --test-dir build`.
 
+Configure with `-DENABLE_VALGRIND=ON` for a debug-info, unoptimized build tuned for running under
+[valgrind](https://valgrind.org/) (mutually exclusive with `-DENABLE_ASAN`/`-DENABLE_TSAN`, which
+also intercept `malloc` and don't mix with it):
+
+```sh
+cmake -S . -B build -DENABLE_VALGRIND=ON
+cmake --build build
+```
+
+This also registers an `EchoLoopValgrind` CTest test (when `valgrind` is found) that runs a real
+HTTP/2 client/server echo round trip (`ClientAsync.PostData_ReceivesEcho`) under memcheck:
+
+```sh
+ctest --test-dir build -R EchoLoopValgrind --output-on-failure
+```
+
+It only fails on `definitely lost`/`indirectly lost` blocks -- real leaks. `possibly lost` and
+`still reachable` blocks show up on every run (deliberately: this fixture leaks its `Server`, and
+detached pthreads/coroutine-frame pooling are common sources of valgrind's conservative "possibly
+lost" false positives) but aren't treated as failures; see the comment above the test in
+`test/CMakeLists.txt` for details.
+
 ## Running
 
 ```sh

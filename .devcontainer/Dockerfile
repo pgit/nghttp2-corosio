@@ -39,7 +39,7 @@ RUN chown $USERNAME:$USERNAME /home/${USERNAME}/.bash_aliases
 # install some more libs and tools, remove *-dev packages that might interfere with custom builds
 #
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
-    apt-get -y install libev-dev golang-cfssl && \
+    apt-get -y install libev-dev golang-cfssl valgrind && \
     apt-get -y remove libnghttp3-dev libnghttp2-dev && \
     apt-get -y autoremove && \
     apt-get clean && \
@@ -73,7 +73,7 @@ ENV LD_LIBRARY_PATH=/usr/local/lib
 # With debian trixie, we now have OpenSSL 3 with QUIC support. Whether or not that is any good,
 # seems to be up for debate: https://www.haproxy.com/blog/state-of-ssl-stacks
 #
-ARG AWS_LC_VERSION=v1.72.0
+ARG AWS_LC_VERSION=v5.1.0
 RUN git clone --depth 1 -b ${AWS_LC_VERSION} https://github.com/aws/aws-lc && \
     cd aws-lc && \
     cmake -B build -DDISABLE_GO=ON --install-prefix=/opt/boringssl && \
@@ -82,7 +82,7 @@ RUN git clone --depth 1 -b ${AWS_LC_VERSION} https://github.com/aws/aws-lc && \
     cd .. && \
     rm -rf aws-lc
 
-ARG NGHTTP3_VERSION=v1.15.0
+ARG NGHTTP3_VERSION=v1.17.0
 RUN git clone --recursive --depth 1 --branch ${NGHTTP3_VERSION} https://github.com/ngtcp2/nghttp3 && \
     cd nghttp3 && \
     autoreconf -i && \
@@ -93,7 +93,7 @@ RUN git clone --recursive --depth 1 --branch ${NGHTTP3_VERSION} https://github.c
 #
 # nghtcp2 is built with both 'boringssl' (actually, aws-lc) and 'ossl' support
 #
-ARG NGTCP2_VERSION=v1.22.1
+ARG NGTCP2_VERSION=v1.24.0
 RUN git clone --recursive --depth 1 --branch ${NGTCP2_VERSION} https://github.com/ngtcp2/ngtcp2 && \
     cd ngtcp2 && \
     autoreconf -i && \
@@ -111,7 +111,7 @@ RUN git clone --recursive --depth 1 --branch ${NGTCP2_VERSION} https://github.co
   
 # ==================================================================================================
 
-RUN git clone --depth 1 -b v1.6.3 https://github.com/libbpf/libbpf && \
+RUN git clone --depth 1 -b v1.7.0 https://github.com/libbpf/libbpf && \
     cd libbpf && \
     PREFIX=/usr/local LIBDIR=/usr/local/lib make -j$(nproc) -C src install && \
     cd .. && rm -rf libbpf

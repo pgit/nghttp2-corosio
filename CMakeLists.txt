@@ -8,9 +8,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(ENABLE_ASAN "Build with AddressSanitizer" OFF)
 option(ENABLE_TSAN "Build with ThreadSanitizer" OFF)
+option(ENABLE_VALGRIND "Build with valgrind-friendly instrumentation (debug info, no optimization)" OFF)
 
 if (ENABLE_ASAN AND ENABLE_TSAN)
     message(FATAL_ERROR "ENABLE_ASAN and ENABLE_TSAN are mutually exclusive")
+endif()
+
+if (ENABLE_VALGRIND AND (ENABLE_ASAN OR ENABLE_TSAN))
+    message(FATAL_ERROR "ENABLE_VALGRIND is mutually exclusive with ENABLE_ASAN/ENABLE_TSAN "
+                         "(sanitizers and valgrind both intercept malloc)")
 endif()
 
 if (ENABLE_ASAN)
@@ -21,6 +27,13 @@ endif()
 if (ENABLE_TSAN)
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_link_options(-fsanitize=thread)
+endif()
+
+if (ENABLE_VALGRIND)
+    # -O0 keeps memcheck's stack traces and uninitialized-value reports accurate; optimized code
+    # can reorder/elide reads in ways valgrind mistakes for real bugs. -g is needed regardless of
+    # build type for valgrind to resolve source lines.
+    add_compile_options(-g -O0)
 endif()
 
 include(FetchContent)

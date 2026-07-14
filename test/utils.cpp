@@ -1,7 +1,7 @@
 #include "utils.hpp"
 
-#include <chrono>
-#include <print>
+#include <chrono> // IWYU pragma: keep
+#include <print> // IWYU pragma: keep
 
 namespace nghttp2_corosio_test
 {
