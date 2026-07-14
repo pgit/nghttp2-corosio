@@ -1,0 +1,4 @@
+*.png
+*.dat
+*.log
+sweep_values.gnuplot
