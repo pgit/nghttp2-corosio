@@ -22,8 +22,6 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -32,11 +30,9 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <tuple>
 
 using namespace std::string_view_literals;
-using namespace std::chrono_literals;
 namespace rv = std::ranges::views;
 
 namespace
@@ -50,12 +46,20 @@ using nghttp2_corosio::Session;
 // test (via `custom`), plus a helper (run()) that connects a Client and drives a per-test
 // coroutine to completion.
 //
-// Client and server share the *same* io_context (the server's own), driven by a single
-// background thread -- there's no separate context to juggle, and it keeps both sides on one
-// thread the way corosio's socket objects expect.
+// Client and server share the *same* io_context (the server's own) -- there's no separate
+// context to juggle, and it keeps both sides on one thread the way corosio's socket objects
+// expect. No thread is spawned: run() posts the per-test coroutine, then drives that io_context
+// itself, synchronously, until the coroutine's completion handler (below) calls server_->stop()
+// -- mirroring how anyhttp's ClientAsync fixture runs its io_context in TearDown() only once the
+// test coroutine's completion token has reset the server. Since the server's accept loop always
+// has an outstanding async accept, the context never runs out of work on its own; stop() is what
+// makes run() return.
 //
-// Like ServerTest (test_server.cpp), the Server is deliberately leaked rather than torn down --
-// see the comment there for why.
+// Structured teardown (stop the server once the client's done, then destroy it -- no leak) was
+// tried and reliably crashes: see the comment on nghttp2_corosio_test::leak() for the empirical
+// finding. Server is a plain leaked pointer instead; it's what makes it safe to call stop()
+// without caring whether the server-side session has fully wound down (see Server::stop()'s
+// docs) -- nothing ever runs its destructor.
 //
 // =================================================================================================
 class ClientAsync : public testing::Test
@@ -68,11 +72,8 @@ protected:
       config.handler = [this](Session::Request request, Session::Response response)
       { return dispatch(std::move(request), std::move(response)); };
 
-      server_ = new nghttp2_corosio::Server(config);
+      server_ = nghttp2_corosio_test::leak(new nghttp2_corosio::Server(config));
       port_ = server_->local_endpoint().port();
-      std::thread([server = server_] {
-         nghttp2_corosio_test::run(server->get_executor().context());
-      }).detach();
    }
 
    /// Routes an incoming request: to `custom` if the test set one, otherwise by path, matching
@@ -116,29 +117,26 @@ protected:
       co_return {};
    }
 
-   /// Runs `test_fn` to completion (via run_client()) and blocks until it either finishes or
-   /// throws, then rethrows on this thread so ASSERT/EXPECT failures inside `test_fn` are
-   /// attributed correctly.
+   /// Runs `test_fn` to completion (via run_client()), driving the server's io_context on this
+   /// thread until the coroutine finishes or throws, then rethrows so ASSERT/EXPECT failures
+   /// inside `test_fn` are attributed correctly.
    void run(std::function<boost::capy::task<>(Session)> test_fn)
    {
-      boost::capy::run_async(server_->get_executor(), [this] { done_ = true; },
+      boost::capy::run_async(server_->get_executor(), [this] { server_->stop(); },
                              [this](std::exception_ptr ep)
       {
          error_ = ep;
-         done_ = true;
+         server_->stop();
       })(run_client(std::move(test_fn)));
 
-      for (int i = 0; i < 2500 && !done_; ++i)
-          std::this_thread::sleep_for(20ms);
+      nghttp2_corosio_test::run(server_->get_executor().context());
 
-      ASSERT_TRUE(done_.load()) << "test did not complete in time";
       if (error_)
          std::rethrow_exception(error_);
    }
 
    std::uint16_t port_ = 0;
    nghttp2_corosio::Server* server_ = nullptr;
-   std::atomic<bool> done_ = false;
    std::exception_ptr error_;
    std::function<boost::capy::task<>(Session::Request, Session::Response)> custom;
 };

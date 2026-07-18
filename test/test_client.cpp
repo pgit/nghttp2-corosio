@@ -13,11 +13,8 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <atomic>
-#include <chrono>
 #include <string>
 #include <string_view>
-#include <thread>
 
 namespace
 {
@@ -47,7 +44,7 @@ boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
 // past the statement's end -- captures live in the closure object, and the coroutine frame only
 // keeps a pointer back to it. Plain functions have no such temporary to outlive.
 boost::capy::task<> connect_to_server(nghttp2_corosio::Server::executor_type executor,
-                                      std::uint16_t port, std::atomic<bool>& connected)
+                                      std::uint16_t port, bool& connected)
 {
    auto ep = boost::corosio::endpoint(boost::corosio::ipv4_address("127.0.0.1"), port);
    nghttp2_corosio::Client client(executor);
@@ -56,29 +53,22 @@ boost::capy::task<> connect_to_server(nghttp2_corosio::Server::executor_type exe
 }
 
 boost::capy::task<> echo_request(std::uint16_t port, std::string_view payload, std::string& echoed,
-                                 bool& ok, std::atomic<bool>& done)
+                                 bool& ok)
 {
    auto ex = co_await boost::capy::this_coro::executor;
    auto ep = boost::corosio::endpoint(boost::corosio::ipv4_address("127.0.0.1"), port);
    nghttp2_corosio::Client client(ex);
    auto [ec, session] = co_await client.connect(ep);
    if (ec)
-   {
-      done = true;
       co_return;
-   }
 
    auto [sec, writer, reader] = co_await session.submit_request("/echo");
    if (sec)
-   {
-      done = true;
       co_return;
-   }
 
    auto [wec, wn] = co_await writer.write_eof(boost::capy::make_buffer(payload));
    auto [rec, rn] = co_await boost::capy::read(reader, boost::capy::dynamic_buffer(echoed));
    ok = !wec && !rec;
-   done = true;
 }
 
 } // namespace
@@ -86,26 +76,25 @@ boost::capy::task<> echo_request(std::uint16_t port, std::string_view payload, s
 namespace
 {
 
-// See the comment in test_server.cpp's ServerTest fixture: server (and, here, the session it
-// accepts) are deliberately leaked rather than torn down, to sidestep a known corosio shutdown
-// race. Safe in this short-lived test binary.
+// See the comment on nghttp2_corosio_test::leak(): destroying a Server whose session hasn't fully
+// wound down reliably crashes, so it (and, here, the session it accepts) is deliberately leaked
+// rather than torn down, to sidestep that known corosio shutdown race. Safe in this short-lived
+// test binary.
 TEST(ClientTest, ConnectsToServer)
 {
    nghttp2_corosio::Config config;
    config.port = 0; // ask the OS for an unused port
-   auto* server = new nghttp2_corosio::Server(config);
+   auto* server = nghttp2_corosio_test::leak(new nghttp2_corosio::Server(config));
    auto port = server->local_endpoint().port();
 
-   std::atomic<bool> connected = false;
-   boost::capy::run_async(server->get_executor())(
+   // No thread is spawned: the completion handler stops the server, which is what makes the
+   // synchronous run() below (driving the server's own io_context on this thread) return.
+   bool connected = false;
+   boost::capy::run_async(server->get_executor(), [server] { server->stop(); },
+                          [server](std::exception_ptr) { server->stop(); })(
       connect_to_server(server->get_executor(), port, connected));
 
-   std::thread([server] { nghttp2_corosio_test::run(server->get_executor().context()); }).detach();
-
-   // Give both sides -- the client's connect and its subsequent session, and the server's accept
-   // and its own session -- a moment to run the handshake to completion.
-   for (int i = 0; i < 50 && !connected; ++i)
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+   nghttp2_corosio_test::run(server->get_executor().context());
 
    EXPECT_TRUE(connected);
 }
@@ -115,22 +104,19 @@ TEST(ClientTest, EchoesRequestBody)
    nghttp2_corosio::Config config;
    config.port = 0; // ask the OS for an unused port
    config.handler = echo;
-   auto* server = new nghttp2_corosio::Server(config);
+   auto* server = nghttp2_corosio_test::leak(new nghttp2_corosio::Server(config));
    auto port = server->local_endpoint().port();
 
    constexpr std::string_view payload = "hello from the client!";
    std::string echoed;
    bool ok = false;
-   std::atomic<bool> done = false;
 
-   boost::capy::run_async(server->get_executor())(echo_request(port, payload, echoed, ok, done));
+   boost::capy::run_async(server->get_executor(), [server] { server->stop(); },
+                          [server](std::exception_ptr) { server->stop(); })(
+      echo_request(port, payload, echoed, ok));
 
-   std::thread([server] { nghttp2_corosio_test::run(server->get_executor().context()); }).detach();
+   nghttp2_corosio_test::run(server->get_executor().context());
 
-   for (int i = 0; i < 100 && !done; ++i)
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
-
-   ASSERT_TRUE(done);
    EXPECT_TRUE(ok);
    EXPECT_EQ(echoed, payload);
 }

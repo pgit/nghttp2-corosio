@@ -2,6 +2,8 @@
 
 #include <nghttp2-corosio/server.hpp>
 
+#include <boost/corosio/io_context.hpp>
+
 #include <nghttp2/nghttp2.h>
 
 #include <gtest/gtest.h>
@@ -12,10 +14,11 @@
 #include <unistd.h>
 
 #include <array>
+#include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace
@@ -27,18 +30,23 @@ namespace
 // a second coroutine framework (or an external tool like curl -- see README.md for how to do that
 // manually) into the test binary.
 //
+// No thread runs the server's io_context in the background -- this test binary spawns no threads
+// at all. Instead, read_exact() below drives `ctx_` (the server's own io_context) directly,
+// interleaved with non-blocking recv() attempts on the raw socket, so the two sides take turns
+// making progress on a single thread: a plain blocking recv() would deadlock here, since nothing
+// would be left to run the server while we sit blocked waiting on it. connect()/send() don't need
+// this treatment -- a loopback TCP connect() to a listening socket completes at the kernel level
+// regardless of whether the server has called accept() yet, and the small payloads these tests
+// send fit comfortably in the kernel's socket send buffer.
+//
 // =================================================================================================
 
 class RawClient
 {
 public:
-   explicit RawClient(std::uint16_t port)
+   RawClient(boost::corosio::io_context& ctx, std::uint16_t port) : ctx_(ctx)
    {
       fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-
-      // Don't let a stuck test hang the whole suite if the server never responds.
-      timeval timeout{.tv_sec = 2, .tv_usec = 0};
-      ::setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
       sockaddr_in addr{};
       addr.sin_family = AF_INET;
@@ -77,20 +85,27 @@ public:
    {
       std::vector<std::uint8_t> buffer(n);
       std::size_t got = 0;
-      while (got < n)
+      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (got < n && std::chrono::steady_clock::now() < deadline)
       {
-         auto r = ::recv(fd_, buffer.data() + got, n - got, 0);
-         if (r <= 0)
+         auto r = ::recv(fd_, buffer.data() + got, n - got, MSG_DONTWAIT);
+         if (r > 0)
          {
-            buffer.resize(got);
-            break;
+            got += static_cast<std::size_t>(r);
+            continue;
          }
-         got += static_cast<std::size_t>(r);
+         if (r == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
+            break; // peer closed, or a real error
+
+         // Nothing available yet -- give the server a chance to make progress, then retry.
+         ctx_.run_one_for(std::chrono::milliseconds(20));
       }
+      buffer.resize(got);
       return buffer;
    }
 
 private:
+   boost::corosio::io_context& ctx_;
    int fd_ = -1;
    bool connected_ = false;
 };
@@ -137,23 +152,17 @@ protected:
       nghttp2_corosio::Config config;
       config.port = 0; // ask the OS for an unused port
 
-      // server_ and its background thread are deliberately never torn down. Destroying a Server
-      // while one of its sessions hasn't fully wound down can deadlock: recv_loop()'s final
-      // start_write() (see session.cpp), meant to wake a send_loop() that's parked waiting to
-      // flush the closing GOAWAY, is occasionally missed, leaking that session's coroutine and
-      // its socket -- which then hangs (or, if forced along, corrupts memory) in ~Server() /
-      // ~io_context() while it waits for that leaked I/O object to go away. That looks like a
-      // corosio scheduler issue around same-thread wakeups right before the scheduler goes idle;
-      // it needs investigation upstream. Until then, leaking here (safe: this is a short-lived
-      // test binary, and every test gets a fresh instance on its own ephemeral port) lets these
-      // tests exercise the real wire protocol without hitting that race.
-      server_ = new nghttp2_corosio::Server(config);
-      std::thread([server = server_] {
-         nghttp2_corosio_test::run(server->get_executor().context());
-      }).detach();
+      // See the comment on nghttp2_corosio_test::leak(): destroying a Server whose session
+      // hasn't fully wound down reliably crashes, so server_ is deliberately leaked rather than
+      // torn down -- safe in this short-lived test binary, and every test gets a fresh instance
+      // on its own ephemeral port. No thread runs server_'s io_context in the background either:
+      // see the comment on RawClient for how each test drives it directly, interleaved with raw
+      // socket I/O.
+      server_ = nghttp2_corosio_test::leak(new nghttp2_corosio::Server(config));
    }
 
    std::uint16_t port() const { return server_->local_endpoint().port(); }
+   boost::corosio::io_context& context() const { return server_->get_executor().context(); }
 
    nghttp2_corosio::Server* server_ = nullptr;
 };
@@ -162,13 +171,13 @@ protected:
 
 TEST_F(ServerTest, AcceptsConnection)
 {
-   RawClient client(port());
+   RawClient client(context(), port());
    EXPECT_TRUE(client.connected());
 }
 
 TEST_F(ServerTest, SendsInitialSettingsFrame)
 {
-   RawClient client(port());
+   RawClient client(context(), port());
    ASSERT_TRUE(client.connected());
 
    // The server submits its SETTINGS frame as soon as the session is set up, before it has read
@@ -185,7 +194,7 @@ TEST_F(ServerTest, SendsInitialSettingsFrame)
 
 TEST_F(ServerTest, AcknowledgesClientSettings)
 {
-   RawClient client(port());
+   RawClient client(context(), port());
    ASSERT_TRUE(client.connected());
 
    // Drain the server's initial SETTINGS frame.
@@ -215,7 +224,7 @@ TEST_F(ServerTest, AcceptsMultipleSequentialConnections)
 {
    for (int i = 0; i < 3; ++i)
    {
-      RawClient client(port());
+      RawClient client(context(), port());
       ASSERT_TRUE(client.connected()) << "connection " << i;
       EXPECT_TRUE(read_frame_header(client).has_value()) << "connection " << i;
    }
@@ -224,13 +233,13 @@ TEST_F(ServerTest, AcceptsMultipleSequentialConnections)
 TEST_F(ServerTest, SurvivesAbruptDisconnect)
 {
    {
-      RawClient client(port());
+      RawClient client(context(), port());
       ASSERT_TRUE(client.connected());
       // Close the socket immediately, without reading or writing anything.
    }
 
    // The accept loop and session cleanup must still be healthy afterwards.
-   RawClient client(port());
+   RawClient client(context(), port());
    ASSERT_TRUE(client.connected());
    EXPECT_TRUE(read_frame_header(client).has_value());
 }
