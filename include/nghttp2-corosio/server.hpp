@@ -45,6 +45,15 @@ public:
    explicit Server(Config config = {});
    Server(Server&& other) noexcept;
    Server& operator=(Server&& other) noexcept;
+
+   /// Cancels the accept loop, every session this Server accepted, every in-flight request
+   /// handler, and -- since sessions register into a context-wide registry, see
+   /// detail::TaskGroup in src/task_group.hpp -- any Client session sharing this Server's
+   /// executor too. Then drains the io_context synchronously (running it right here) until all
+   /// of them have actually finished, before any member -- in particular the io_context itself
+   /// -- starts destructing. Ungraceful by design: in-flight request bodies are abandoned, not
+   /// drained, since a destructor can't co_await. Always safe to call, regardless of what's in
+   /// flight or whether stop() was called first.
    ~Server();
 
    using executor_type = boost::corosio::io_context::executor_type;
@@ -55,13 +64,9 @@ public:
    /// Runs the server's io_context until stopped. Blocks the calling thread.
    std::size_t run();
 
-   /// Causes a concurrent run() (on another thread) to return as soon as possible. Mainly useful
-   /// for tests that run the server on a background thread and need to shut it down afterwards.
-   ///
-   /// Known issue: if a session hasn't fully wound down (e.g. its peer disconnected but the final
-   /// GOAWAY hasn't been flushed yet), destroying this Server afterwards can hang or corrupt
-   /// memory -- see the comment on Session::Impl::send_loop() in session.cpp. Safe to call once no
-   /// sessions are in flight (e.g. right after construction, before accepting any connections).
+   /// Causes a concurrent run() (e.g. on another thread, or a synchronous run() call further down
+   /// the same call stack) to return as soon as possible. This only stops the scheduler loop --
+   /// it doesn't cancel the accept loop or any session; ~Server() does that (see above).
    void stop();
 
 private:

@@ -83,13 +83,31 @@ request-handler API yet: every server-side request is handled by a single hardco
 with fixed pseudo-headers (`POST`, `http`, a hardcoded `:authority`). Headers beyond routing by stream
 ID/category aren't captured anywhere yet.
 
-**Known issue**: `recv_loop()`'s final `start_write()` (waking a parked `send_loop()` to flush the
-closing GOAWAY after the peer disconnects) is occasionally missed — looks like a corosio scheduler
-edge case around same-thread wakeups posted right before the scheduler would otherwise go idle,
-reproduced with a minimal example that doesn't touch nghttp2 at all. When missed, the session's
-coroutine and socket leak, and destroying the owning `Server`/`Client` afterward can hang or corrupt
-memory. See the comment on `Session::Impl::send_loop()`. Until it's fixed upstream, tests sidestep it
-by deliberately leaking each test's `Server` (`new`, never `delete`d) instead of tearing it down.
+**Structured shutdown**: `Server` doesn't leak on destruction. `~Server()` performs synchronous,
+ungraceful cancellation — no draining of in-flight requests, since a destructor can't `co_await` —
+of everything running on its `io_context`: the accept loop, every session it accepted, every
+in-flight request handler, and (since `Session::Impl`/`Client::Impl::connect()` register into the
+same per-context service) any `Client` session sharing that executor too. See
+`detail::TaskGroup` (`src/task_group.hpp`) for the mechanism: a `capy::execution_context::service`
+that tracks spawned coroutines via a shared `std::stop_source`, and `Server::Impl::~Impl()` for how
+it's driven — `request_stop()` then `poll()`/`run_one()` in a loop until every tracked coroutine has
+actually unwound, all *before* any member (in particular `io_context`) starts destructing. Destroying
+an `io_context` while a coroutine frame is still suspended on it is what used to corrupt memory (a
+double-free inside the frame's `std::stop_state`/`std::stop_callback` teardown); draining first means
+nothing is ever destroyed mid-flight.
+
+This replaced an earlier, less principled state: `recv_loop()`'s final `start_write()` (waking a
+parked `send_loop()` to flush the closing GOAWAY after the peer disconnects) was occasionally
+missed — apparently a corosio scheduler edge case around same-thread wakeups posted right before the
+scheduler would otherwise go idle — leaving that coroutine (and its socket) stuck forever, and tests
+sidestepped it by deliberately leaking every `Server` instead of tearing one down. The structured
+shutdown above no longer depends on that particular wakeup: `request_stop()` happens from `~Impl()`,
+outside of any active `io_context::run()`/`poll()` pass, so the specific "posted right as the
+scheduler goes idle" race window it needed doesn't apply to it. Whether the underlying corosio
+scheduler behavior is itself fixed is untested here; what's known is that `Server` teardown no longer
+hangs or corrupts under it — verified with repeated (50x) shuffled test runs and full-suite valgrind
+sweeps (`--leak-check=full`, zero leaks, zero errors) rather than just the one previously-`EchoLoop`-
+scoped check.
 
 ### Coding Conventions
 

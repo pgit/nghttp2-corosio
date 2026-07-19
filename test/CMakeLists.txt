@@ -24,25 +24,19 @@ gtest_discover_tests(nghttp2-corosio-tests)
 
 # =================================================================================================
 #
-# Runs the HTTP/2-level echo round trip (ClientAsync.PostData_ReceivesEcho) under valgrind's
-# memcheck, registered as its own CTest test so it doesn't pay valgrind's overhead for the whole
-# suite. Reuses the real client/server/nghttp2-session code path rather than a synthetic
-# reproducer, since the point is to exercise exactly the code the "Known issue" in CLAUDE.md
-# describes (a leaked coroutine/socket after a scheduler edge case) under a tool that can actually
-# tell a real leak/corruption apart from noise.
+# Runs the whole test binary under valgrind's memcheck, registered as its own CTest test (rather
+# than folded into gtest_discover_tests() above) so the plain, fast run stays the default and this
+# one is opt-in-by-selection when valgrind's overhead is worth it (e.g. CI, or chasing a
+# regression).
 #
-# ClientAsync deliberately leaks its Server (`new`, never `delete`d -- see test_client_async.cpp)
-# to sidestep that known issue instead of triggering it. That leaked Server stays reachable via
-# the fixture's `server_` pointer and the detached server thread's captured copy, so valgrind
-# reports it as "still reachable", which --errors-for-leak-kinds below doesn't treat as an error.
-#
-# --errors-for-leak-kinds is narrowed to definite,indirect (memcheck's default also includes
-# "possible"): both the detached server/worker threads (glibc's pthread TLS bookkeeping is a
-# well-known source of "possibly lost" false positives for detached threads) and capy's
-# recycling_memory_resource (coroutine frames/buffers are reached through interior pointers --
-# e.g. a coroutine_handle -- that valgrind's conservative scanner can't always prove point to the
-# start of a block) produce "possibly lost" blocks on every run that aren't real leaks.
-# --show-leak-kinds still includes "possible" so they're visible for manual inspection.
+# Every Server the test suite constructs is a real, structured value now: ~Server() cancels and
+# joins its accept loop, every session, and every request handler synchronously before its
+# io_context is destroyed (see detail::TaskGroup, src/task_group.hpp, and the comment on
+# Server::~Server() in server.hpp) -- nothing is deliberately leaked anymore, and no thread is
+# spawned either. So unlike when this test only had to tolerate "still reachable"/"possibly lost"
+# noise from a leaked Server and detached worker threads, the whole suite is now expected to be
+# genuinely leak-free end to end (confirmed: "All heap blocks were freed -- no leaks are
+# possible"), and --errors-for-leak-kinds is deliberately strict about it.
 #
 # Configure with -DENABLE_VALGRIND=ON for the most accurate stack traces (see top-level
 # CMakeLists.txt); this test itself works with any build.
@@ -52,15 +46,15 @@ gtest_discover_tests(nghttp2-corosio-tests)
 find_program(VALGRIND_EXECUTABLE valgrind)
 if (VALGRIND_EXECUTABLE)
     add_test(
-        NAME EchoLoopValgrind
+        NAME ValgrindMemcheck
         COMMAND ${VALGRIND_EXECUTABLE}
             --error-exitcode=1
             --leak-check=full
             --show-leak-kinds=definite,indirect,possible
-            --errors-for-leak-kinds=definite,indirect
+            --errors-for-leak-kinds=definite,indirect,possible
             --track-origins=yes
-            $<TARGET_FILE:nghttp2-corosio-tests> --gtest_filter=ClientAsync.PostData_ReceivesEcho
+            $<TARGET_FILE:nghttp2-corosio-tests>
     )
 else()
-    message(STATUS "valgrind not found -- EchoLoopValgrind test will not be registered")
+    message(STATUS "valgrind not found -- ValgrindMemcheck test will not be registered")
 endif()

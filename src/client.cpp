@@ -1,8 +1,8 @@
 #include "nghttp2-corosio/client.hpp"
 #include "client_impl.hpp"
 #include "session_impl.hpp"
+#include "task_group.hpp"
 
-#include <boost/capy/ex/run_async.hpp>
 #include <boost/capy/io/any_stream.hpp>
 #include <boost/corosio/tcp_socket.hpp>
 
@@ -38,7 +38,13 @@ boost::capy::io_task<Session> Client::Impl::connect(boost::corosio::endpoint ep)
    boost::capy::any_stream stream(std::move(socket));
    auto session = std::make_shared<Session::Impl>(executor_, std::move(stream),
                                                   Session::Impl::Role::client, RequestHandler{});
-   boost::capy::run_async(executor_)(session->run());
+
+   // Tracked via the executor's context, not via this Client: Client borrows an external executor
+   // (see client.hpp) rather than owning it, so it has no destructor of its own to drain from.
+   // Whichever Server (or other owner) does own that context's io_context will cancel and join
+   // this session as part of its own teardown -- see Server::Impl::~Impl() and detail::TaskGroup.
+   auto& group = executor_.context().use_service<detail::TaskGroup>();
+   group.spawn(executor_, session->run());
 
    co_return {std::error_code{}, Session(std::move(session))};
 }

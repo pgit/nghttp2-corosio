@@ -2,6 +2,7 @@
 #include "nghttp2-corosio/logging.hpp"
 #include "session_impl.hpp"
 #include "stream_impl.hpp"
+#include "task_group.hpp"
 
 #include <boost/capy/buffers.hpp>
 #include <boost/capy/buffers/string_dynamic_buffer.hpp>
@@ -19,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace nghttp2_corosio
@@ -295,6 +297,18 @@ boost::capy::task<> Session::Impl::run()
 
    [[maybe_unused]] auto result = co_await boost::capy::when_all(send_loop(), recv_loop());
 
+   // Abort any streams that never closed at the protocol level -- e.g. abandoned by the user
+   // without writing/reading anything, or still in flight when the session ended (connection
+   // error, cancellation). on_close() wakes anything still suspended on one (a Reader/Writer the
+   // caller is still holding gets an eof/canceled error instead of hanging forever). Clearing
+   // streams_ also breaks the Stream <-> Session::Impl reference cycle (streams_ holds a
+   // shared_ptr<Stream>, Stream holds a shared_ptr<Session::Impl> back to call native_handle()/
+   // start_write()) that would otherwise keep both alive forever once nothing else references
+   // either -- normally broken one stream at a time by close_stream(), driven by nghttp2's
+   // on_stream_close_callback(), which never fires for a stream neither side ever closed.
+   for (auto& [id, stream] : std::exchange(streams_, {}))
+      stream->on_close();
+
    logi("session ended");
 }
 
@@ -427,7 +441,11 @@ void Session::Impl::close_stream(std::int32_t id)
 
 void Session::Impl::dispatch_request(std::shared_ptr<Stream> stream)
 {
-   boost::capy::run_async(executor_)(handle_request(std::move(stream)));
+   // Tracked via the same TaskGroup as the session itself (see Server::Impl::~Impl()), so a
+   // request handler still mid-flight when the owning Server is destroyed gets cancelled and
+   // joined too, not left dangling.
+   auto& group = executor_.context().use_service<detail::TaskGroup>();
+   group.spawn(executor_, handle_request(std::move(stream)));
 }
 
 // -------------------------------------------------------------------------------------------------

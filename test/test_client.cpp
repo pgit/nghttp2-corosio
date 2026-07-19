@@ -76,25 +76,26 @@ boost::capy::task<> echo_request(std::uint16_t port, std::string_view payload, s
 namespace
 {
 
-// See the comment on nghttp2_corosio_test::leak(): destroying a Server whose session hasn't fully
-// wound down reliably crashes, so it (and, here, the session it accepts) is deliberately leaked
-// rather than torn down, to sidestep that known corosio shutdown race. Safe in this short-lived
-// test binary.
+// server is a plain stack-local value, destroyed exactly once (at the closing brace below) --
+// after nghttp2_corosio_test::run() has returned control here, never while anything is still
+// executing inside its io_context. ~Server() cancels and joins the accept loop, every session it
+// accepted, and the Client's own session (registered into the same per-context TaskGroup -- see
+// task_group.hpp), all synchronously, before its io_context is torn down.
 TEST(ClientTest, ConnectsToServer)
 {
    nghttp2_corosio::Config config;
    config.port = 0; // ask the OS for an unused port
-   auto* server = nghttp2_corosio_test::leak(new nghttp2_corosio::Server(config));
-   auto port = server->local_endpoint().port();
+   nghttp2_corosio::Server server(config);
+   auto port = server.local_endpoint().port();
 
    // No thread is spawned: the completion handler stops the server, which is what makes the
    // synchronous run() below (driving the server's own io_context on this thread) return.
    bool connected = false;
-   boost::capy::run_async(server->get_executor(), [server] { server->stop(); },
-                          [server](std::exception_ptr) { server->stop(); })(
-      connect_to_server(server->get_executor(), port, connected));
+   boost::capy::run_async(server.get_executor(), [&server] { server.stop(); },
+                          [&server](std::exception_ptr) { server.stop(); })(
+      connect_to_server(server.get_executor(), port, connected));
 
-   nghttp2_corosio_test::run(server->get_executor().context());
+   nghttp2_corosio_test::run(server.get_executor().context());
 
    EXPECT_TRUE(connected);
 }
@@ -104,18 +105,18 @@ TEST(ClientTest, EchoesRequestBody)
    nghttp2_corosio::Config config;
    config.port = 0; // ask the OS for an unused port
    config.handler = echo;
-   auto* server = nghttp2_corosio_test::leak(new nghttp2_corosio::Server(config));
-   auto port = server->local_endpoint().port();
+   nghttp2_corosio::Server server(config);
+   auto port = server.local_endpoint().port();
 
    constexpr std::string_view payload = "hello from the client!";
    std::string echoed;
    bool ok = false;
 
-   boost::capy::run_async(server->get_executor(), [server] { server->stop(); },
-                          [server](std::exception_ptr) { server->stop(); })(
+   boost::capy::run_async(server.get_executor(), [&server] { server.stop(); },
+                          [&server](std::exception_ptr) { server.stop(); })(
       echo_request(port, payload, echoed, ok));
 
-   nghttp2_corosio_test::run(server->get_executor().context());
+   nghttp2_corosio_test::run(server.get_executor().context());
 
    EXPECT_TRUE(ok);
    EXPECT_EQ(echoed, payload);

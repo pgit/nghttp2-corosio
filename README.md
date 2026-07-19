@@ -29,17 +29,17 @@ cmake -S . -B build -DENABLE_VALGRIND=ON
 cmake --build build
 ```
 
-This also registers an `EchoLoopValgrind` CTest test (when `valgrind` is found) that runs a real
-HTTP/2 client/server echo round trip (`ClientAsync.PostData_ReceivesEcho`) under memcheck:
+This also registers a `ValgrindMemcheck` CTest test (when `valgrind` is found) that runs the whole
+test suite under memcheck:
 
 ```sh
-ctest --test-dir build -R EchoLoopValgrind --output-on-failure
+ctest --test-dir build -R ValgrindMemcheck --output-on-failure
 ```
 
-It only fails on `definitely lost`/`indirectly lost` blocks -- real leaks. `possibly lost` and
-`still reachable` blocks show up on every run (deliberately: this fixture leaks its `Server`, and
-detached pthreads/coroutine-frame pooling are common sources of valgrind's conservative "possibly
-lost" false positives) but aren't treated as failures; see the comment above the test in
+Every `Server` the tests construct is destroyed through a real, structured teardown (see
+`Server::~Server()`'s docs) rather than being leaked, and no thread is spawned, so the whole run is
+expected to be genuinely leak-free end to end -- this test fails on any `definitely lost`,
+`indirectly lost`, or `possibly lost` block, not just real leaks; see the comment above the test in
 `test/CMakeLists.txt` for details.
 
 ## Running

@@ -3,8 +3,7 @@
 // (https://github.com/pgit/anyhttp/blob/master/test/test_server.cpp), adapted to
 // nghttp2-corosio's capy/corosio-based API. Tests relying on features this library doesn't have
 // yet -- arbitrary request/response headers, a URL type with query params, and asio-style
-// per-operation cancellation (cancel_after/bind_cancellation_slot) -- are not ported; see
-// CLAUDE.md's "Known issue" section and session.hpp's docs for what's missing.
+// per-operation cancellation (cancel_after/bind_cancellation_slot) -- are not ported.
 //
 #include "request_handlers.hpp"
 #include "utils.hpp"
@@ -25,6 +24,7 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <optional>
 #include <random>
 #include <ranges>
 #include <span>
@@ -55,11 +55,12 @@ using nghttp2_corosio::Session;
 // has an outstanding async accept, the context never runs out of work on its own; stop() is what
 // makes run() return.
 //
-// Structured teardown (stop the server once the client's done, then destroy it -- no leak) was
-// tried and reliably crashes: see the comment on nghttp2_corosio_test::leak() for the empirical
-// finding. Server is a plain leaked pointer instead; it's what makes it safe to call stop()
-// without caring whether the server-side session has fully wound down (see Server::stop()'s
-// docs) -- nothing ever runs its destructor.
+// server_ is a plain value (via optional, for late construction), destroyed in TearDown(): by
+// then, run()'s call to nghttp2_corosio_test::run() has already returned control here, so
+// nothing is executing inside the io_context that server_ owns. ~Server() cancels and joins the
+// accept loop, every session it accepted, and -- since Client::connect() below registers into
+// the same per-context TaskGroup (see task_group.hpp) -- the Client's own session too, all
+// synchronously, before its io_context is torn down. See Server::Impl::~Impl().
 //
 // =================================================================================================
 class ClientAsync : public testing::Test
@@ -72,9 +73,11 @@ protected:
       config.handler = [this](Session::Request request, Session::Response response)
       { return dispatch(std::move(request), std::move(response)); };
 
-      server_ = nghttp2_corosio_test::leak(new nghttp2_corosio::Server(config));
+      server_.emplace(config);
       port_ = server_->local_endpoint().port();
    }
+
+   void TearDown() override { server_.reset(); }
 
    /// Routes an incoming request: to `custom` if the test set one, otherwise by path, matching
    /// the small set of server-side helpers in request_handlers.hpp.
@@ -136,7 +139,7 @@ protected:
    }
 
    std::uint16_t port_ = 0;
-   nghttp2_corosio::Server* server_ = nullptr;
+   std::optional<nghttp2_corosio::Server> server_;
    std::exception_ptr error_;
    std::function<boost::capy::task<>(Session::Request, Session::Response)> custom;
 };
@@ -328,13 +331,15 @@ TEST_F(ClientAsync, ClientDropsRequest)
 
 // -------------------------------------------------------------------------------------------------
 
-// Server::stop() documents that it's only safe to call once no sessions are in flight --
-// destroying the Server afterwards while one hasn't fully wound down can hang or corrupt memory
-// (see the "Known issue" in CLAUDE.md and the comment on Server::stop() in server.hpp). This test
-// deliberately violates that precondition, the same way anyhttp's ResetServerDuringRequest does,
-// so it reliably hits the documented race instead of a bug of its own. Disabled until that's
-// fixed upstream; kept here to document the intended behavior once it is.
-TEST_F(ClientAsync, DISABLED_ResetServerDuringRequest)
+// Ported from anyhttp's ResetServerDuringRequest: races an endless upload against stop()ping the
+// server out from underneath it, mid-request. This used to be exactly the scenario CLAUDE.md's
+// former "Known issue" warned about -- destroying a Server while a session hadn't fully wound
+// down could hang or corrupt memory -- so this test stayed disabled as a regression case to
+// enable once that was fixed. It now passes reliably (verified with 100x repeated runs and a
+// full-suite valgrind sweep): ~Server()'s structured shutdown (detail::TaskGroup, see
+// task_group.hpp) cancels and joins the session synchronously before its io_context is torn
+// down, so it no longer matters whether the session had wound down on its own first.
+TEST_F(ClientAsync, ResetServerDuringRequest)
 {
    run([this](Session session) -> boost::capy::task<>
    {

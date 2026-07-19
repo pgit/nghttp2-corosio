@@ -87,11 +87,14 @@ private:
    /// nghttp2 has nothing left to send but still wants to read or write; ends once nghttp2 wants
    /// neither.
    ///
-   /// Known issue: the final start_write() from recv_loop() (waking this up to flush the closing
-   /// GOAWAY after the peer disconnects) is occasionally missed, apparently a corosio scheduler
-   /// edge case around same-thread wakeups posted right before the scheduler would otherwise go
-   /// idle -- reproduced with nothing nghttp2-specific involved. When missed, this coroutine (and
-   /// the socket it holds) leaks; see the caveat on Server::stop().
+   /// The final start_write() from recv_loop() (waking this up to flush the closing GOAWAY after
+   /// the peer disconnects) has been observed to occasionally go unanswered, apparently a corosio
+   /// scheduler edge case around same-thread wakeups posted right before the scheduler would
+   /// otherwise go idle -- reproduced with nothing nghttp2-specific involved. If that happens, this
+   /// coroutine is left suspended here indefinitely (the session goes idle rather than closing
+   /// promptly) until something cancels it -- Server::~Server()'s structured shutdown does exactly
+   /// that (see detail::TaskGroup in task_group.hpp), which is also what makes it safe to destroy a
+   /// Server regardless of whether any session has fully wound down.
    boost::capy::io_task<> send_loop();
 
    /// Reads bytes from the stream and feeds them to nghttp2 (nghttp2_session_mem_recv2), which

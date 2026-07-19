@@ -1,5 +1,3 @@
-#include "utils.hpp"
-
 #include <nghttp2-corosio/server.hpp>
 
 #include <boost/corosio/io_context.hpp>
@@ -151,20 +149,18 @@ protected:
    {
       nghttp2_corosio::Config config;
       config.port = 0; // ask the OS for an unused port
-
-      // See the comment on nghttp2_corosio_test::leak(): destroying a Server whose session
-      // hasn't fully wound down reliably crashes, so server_ is deliberately leaked rather than
-      // torn down -- safe in this short-lived test binary, and every test gets a fresh instance
-      // on its own ephemeral port. No thread runs server_'s io_context in the background either:
-      // see the comment on RawClient for how each test drives it directly, interleaved with raw
-      // socket I/O.
-      server_ = nghttp2_corosio_test::leak(new nghttp2_corosio::Server(config));
+      server_.emplace(config);
    }
 
+   // server_ is a plain value (via optional, for late construction) -- ~Server() cancels and
+   // joins its accept loop and every session synchronously (see Server::Impl::~Impl()), so
+   // destroying it here at the end of each test is safe: no thread runs its io_context in the
+   // background either -- see the comment on RawClient for how each test drives it directly,
+   // interleaved with raw socket I/O.
    std::uint16_t port() const { return server_->local_endpoint().port(); }
    boost::corosio::io_context& context() const { return server_->get_executor().context(); }
 
-   nghttp2_corosio::Server* server_ = nullptr;
+   std::optional<nghttp2_corosio::Server> server_;
 };
 
 // =================================================================================================

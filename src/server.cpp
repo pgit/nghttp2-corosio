@@ -2,8 +2,10 @@
 #include "nghttp2-corosio/logging.hpp"
 #include "server_impl.hpp"
 #include "session_impl.hpp"
+#include "task_group.hpp"
 
 #include <boost/capy/ex/run_async.hpp>
+#include <boost/capy/ex/this_coro.hpp>
 #include <boost/capy/io/any_stream.hpp>
 #include <boost/corosio/ipv6_address.hpp>
 #include <boost/corosio/tcp_socket.hpp>
@@ -22,12 +24,37 @@ Server::Impl::Impl(Config config)
 {
 }
 
-void Server::Impl::start() { boost::capy::run_async(ioc_.get_executor())(accept_loop()); }
+Server::Impl::~Impl()
+{
+   auto& group = ioc_.use_service<detail::TaskGroup>();
+   group.request_stop();
+
+   // Drain synchronously: run the io_context right here, before any member below starts
+   // destructing, until every tracked coroutine (accept_loop, every session, every in-flight
+   // request handler) has actually completed -- not merely been asked to. restart() undoes
+   // whatever stop() call got us here (the scheduler refuses to process anything once stopped,
+   // see io_context::stop()'s docs) and is harmless to call redundantly on every iteration.
+   while (group.count() > 0)
+   {
+      ioc_.restart();
+      if (ioc_.poll() == 0)
+         ioc_.run_one();
+   }
+}
+
+void Server::Impl::start()
+{
+   auto& group = ioc_.use_service<detail::TaskGroup>();
+   group.spawn(ioc_.get_executor(), accept_loop());
+}
 
 boost::capy::task<> Server::Impl::accept_loop()
 {
    auto ep = acceptor_.local_endpoint();
    logi("Listening on port {}", ep.port());
+
+   auto& group = ioc_.use_service<detail::TaskGroup>();
+   auto token = co_await boost::capy::this_coro::stop_token;
 
    for (;;)
    {
@@ -35,6 +62,8 @@ boost::capy::task<> Server::Impl::accept_loop()
       auto [ec] = co_await acceptor_.accept(peer);
       if (ec)
       {
+         if (token.stop_requested())
+            break;
          logw("Accept error: {}", ec.message());
          continue;
       }
@@ -55,7 +84,7 @@ boost::capy::task<> Server::Impl::accept_loop()
 
       auto session = std::make_shared<Session::Impl>(ioc_.get_executor(), std::move(stream),
                                                      Session::Impl::Role::server, config_.handler);
-      boost::capy::run_async(ioc_.get_executor())(session->run());
+      group.spawn(ioc_.get_executor(), session->run());
    }
 }
 
