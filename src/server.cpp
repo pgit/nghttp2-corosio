@@ -8,6 +8,7 @@
 #include <boost/capy/ex/this_coro.hpp>
 #include <boost/capy/io/any_stream.hpp>
 #include <boost/corosio/ipv6_address.hpp>
+#include <boost/corosio/socket_option.hpp>
 #include <boost/corosio/tcp_socket.hpp>
 
 #include <sstream>
@@ -67,6 +68,12 @@ boost::capy::task<> Server::Impl::accept_loop()
          logw("Accept error: {}", ec.message());
          continue;
       }
+
+      // HTTP/2 is a request/response protocol with many small frames (HEADERS, WINDOW_UPDATE,
+      // small DATA chunks); leaving Nagle's algorithm on lets those sit buffered waiting to
+      // coalesce, which combined with the peer's delayed ACKs stalls unpipelined request/response
+      // round trips by tens of milliseconds.
+      peer.set_option(boost::corosio::socket_option::no_delay(true));
 
       // corosio's address types only support operator<<, not std::formatter, so route through a
       // stream to build the string logi() can format.

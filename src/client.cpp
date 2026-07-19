@@ -4,6 +4,7 @@
 #include "task_group.hpp"
 
 #include <boost/capy/io/any_stream.hpp>
+#include <boost/corosio/socket_option.hpp>
 #include <boost/corosio/tcp_socket.hpp>
 
 namespace nghttp2_corosio
@@ -34,6 +35,9 @@ boost::capy::io_task<Session> Client::Impl::connect(boost::corosio::endpoint ep)
    boost::corosio::tcp_socket socket(executor_);
    if (auto [ec] = co_await socket.connect(ep); ec)
       co_return {ec, Session{}};
+
+   // See Server::Impl::accept_loop() for why HTTP/2 needs this on both ends of the connection.
+   socket.set_option(boost::corosio::socket_option::no_delay(true));
 
    boost::capy::any_stream stream(std::move(socket));
    auto session = std::make_shared<Session::Impl>(executor_, std::move(stream),
