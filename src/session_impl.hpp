@@ -77,7 +77,7 @@ public:
    void dispatch_request(std::shared_ptr<Stream> stream);
 
    /// Submits the response HEADERS frame (`:status` plus `headers`) for `stream`, wiring up its
-   /// data provider. Called lazily by Session::Response -- see handle_request().
+   /// data provider. Called explicitly by Session::Response::submit() -- see handle_request().
    boost::capy::io_task<> submit_response(std::shared_ptr<Stream> stream, unsigned int status,
                                           const Session::Headers& headers);
 
@@ -104,9 +104,9 @@ private:
    boost::capy::io_task<> recv_loop();
 
    /// Builds a Request/Response pair for a newly-arrived request and hands them to `handler_` (if
-   /// set; otherwise the response is just closed empty). The response isn't submitted here -- see
-   /// Session::Response -- so the handler can set a status/headers before its first write.
-   /// Spawned (detached) per request by the HEADERS/REQUEST case in on_frame_recv_callback().
+   /// set; otherwise the response is just closed empty). The response isn't submitted here -- the
+   /// handler is responsible for calling `response.submit(status, headers)` before its first
+   /// write. Spawned (detached) per request by the HEADERS/REQUEST case in on_frame_recv_callback().
    boost::capy::task<> handle_request(std::shared_ptr<Stream> stream);
 
    boost::capy::any_executor executor_;

@@ -14,14 +14,18 @@
 #include <array>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace
 {
 
-// Same shape as server_main.cpp's echo handler: streams the request body straight back.
+// Same shape as server_main.cpp's echo handler: streams the request body straight back. submit()
+// is deferred to just before the first write -- see the comment on server_main.cpp's echo() for
+// why that matters for throughput.
 boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
                          nghttp2_corosio::Session::Response response)
 {
+   bool submitted = false;
    std::array<std::uint8_t, 64 * 1024> buffer;
    for (;;)
    {
@@ -30,10 +34,15 @@ boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
       if (rec)
          break;
 
+      if (!std::exchange(submitted, true))
+         [[maybe_unused]] auto s = co_await response.submit();
+
       auto [wec, wn] = co_await response.write(boost::capy::const_buffer(buffer.data(), n));
       if (wec)
          break;
    }
+   if (!submitted)
+      [[maybe_unused]] auto s = co_await response.submit();
 
    [[maybe_unused]] auto result = co_await response.write_eof();
 }

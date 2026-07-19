@@ -39,6 +39,40 @@ are current — both libraries are pre-1.0 and evolving.
 This project is meant to be used in the devcontainer defined here (built from
 `docker.io/psedoc/cpp-devcontainer`, see [pgit/cpp-devcontainer](https://github.com/pgit/cpp-devcontainer)).
 
+## Benchmarking
+
+For a quick before/after throughput comparison (as opposed to the full `-c`/`-m` grid sweep in
+`benchmark/`, see its own README), configure a **Release** build in a separate directory --
+`build`'s default `Debug` config makes `nghttp2-corosio` itself 10-15x slower, which swamps any
+signal from a source change:
+
+```sh
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+```
+
+Then run `server_main` and hit it with h2load using a payload from `test/data/` (`1k`, `64kminus1`):
+
+```sh
+./build-release/server_main 18080 warn &
+h2load http://localhost:18080/echo -n 10000 -m 4 -c 3 -d test/data/64kminus1
+```
+
+**The system's `libnghttp2` matters too.** It's built from source into the devcontainer image
+(`/usr/local/lib/libnghttp2.*`), not just `nghttp2-corosio`'s own Debug/Release setting -- if that
+image was built without its own Release/optimization flags, every measurement is dominated by
+nghttp2 itself (observed ~10x slower end-to-end, independent of anything in this repo) regardless
+of how `nghttp2-corosio` is configured. If absolute throughput looks implausibly low, rebuild the
+devcontainer image before trusting the numbers, rather than chasing a regression that isn't there.
+
+**This environment is noisy.** Back-to-back runs of the *identical* binary have been observed to
+vary ~40-90% (shared/virtualized host, no CPU pinning). A sequential "build before, benchmark;
+build after, benchmark" comparison can show a fake regression or improvement driven entirely by
+time-varying background load. Instead, keep both binaries around (e.g. `cp build-release/server_main
+/tmp/server_main_<label>`) and interleave short runs across them on different ports, several rounds
+each, then compare per-label averages -- a real effect should show up as a gap that doesn't
+disappear when you shuffle the run order.
+
 ## Architecture
 
 corosio provides coroutine-based async I/O primitives (`corosio::io_context`, `tcp_acceptor`,
@@ -82,6 +116,21 @@ request-handler API yet: every server-side request is handled by a single hardco
 (`Session::Impl::handle_request()`), and the client has one method, `Session::submit_request(path)`,
 with fixed pseudo-headers (`POST`, `http`, a hardcoded `:authority`). Headers beyond routing by stream
 ID/category aren't captured anywhere yet.
+
+**`Session::Response::submit()` timing matters for throughput.** `submit(status, headers)` sends
+the response HEADERS frame immediately -- it's an explicit, single call rather than a lazy
+accumulator triggered on first write (see the class's doc comment in `session.hpp`). For a
+streaming handler, call it once the first body chunk is actually in hand, not up front before
+reading anything: submitting before nghttp2 has any data to send forces it to flush a standalone
+HEADERS frame and defer the data provider (`NGHTTP2_ERR_DEFERRED`) until the first `write()`
+resumes it -- an extra round trip through `Session::Impl::send_loop()`'s wait/wake cycle on every
+single request. Measured ~40% lower h2load throughput (large request/response bodies, see
+"Benchmarking" above) for submitting eagerly vs. deferring to just before the first write, where
+nghttp2 can fold the HEADERS and first DATA frame into one `send_loop()` pass instead. See
+`server_main.cpp`'s `echo()` for the deferred pattern. (anyhttp's own reference handlers submit
+eagerly, up front -- don't copy that shape here without checking whether it still matters once
+anyhttp's send-side implementation is understood, since this project's `send_loop()` batches
+differently.)
 
 **Structured shutdown**: `Server` doesn't leak on destruction. `~Server()` performs synchronous,
 ungraceful cancellation — no draining of in-flight requests, since a destructor can't `co_await` —

@@ -8,6 +8,7 @@
 #include <print>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace
 {
@@ -15,12 +16,21 @@ namespace
 // Streaming echo, the same shape as anyhttp's request_handlers.cpp::echo(): read a chunk, write it
 // straight back, repeat until the request body ends. Registered for every path (there's no routing
 // yet), but meant to be hit at /echo.
+//
+// submit() is deliberately deferred to just before the first write rather than called up front:
+// submitting before any body bytes are available forces nghttp2 to flush a standalone HEADERS
+// frame and defer the data provider (NGHTTP2_ERR_DEFERRED) until the first write() resumes it --
+// an extra round trip through Session::Impl::send_loop()'s wait/wake cycle on every request.
+// Measured ~40% lower h2load throughput (`-n 10000 -m 4 -c 3`, 64KiB request/response bodies) than
+// submitting once the first chunk is already in hand, where nghttp2 can fold the HEADERS and first
+// DATA frame into one send_loop() pass.
 boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
                          nghttp2_corosio::Session::Response response)
 {
    logd("[{}] echo: streaming request body back", request.path());
-   response.set("content-type", "application/octet-stream");
+   static const nghttp2_corosio::Session::Headers headers{{"content-type", "application/octet-stream"}};
 
+   bool submitted = false;
    std::array<std::uint8_t, 64 * 1024> buffer;
    for (;;)
    {
@@ -29,10 +39,15 @@ boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
       if (rec)
          break;
 
+      if (!std::exchange(submitted, true))
+         [[maybe_unused]] auto s = co_await response.submit(200, headers);
+
       auto [wec, wn] = co_await response.write(boost::capy::const_buffer(buffer.data(), n));
       if (wec)
          break;
    }
+   if (!submitted)
+      [[maybe_unused]] auto s = co_await response.submit(200, headers);
 
    [[maybe_unused]] auto result = co_await response.write_eof();
 }

@@ -465,6 +465,7 @@ boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream
    else
    {
       logw("[{}] handle_request: no handler configured, closing response empty", stream->id());
+      [[maybe_unused]] auto submitted = co_await response.submit();
       [[maybe_unused]] auto result = co_await response.write_eof();
    }
 }

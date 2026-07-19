@@ -102,13 +102,14 @@ public:
       StatusFn status_;
    };
 
-   /// The outgoing response on a server session: a status code and headers, settable up until the
-   /// response is submitted, plus the response body. Response forwards write_some()/write()/
-   /// write_eof() to the body, so it can be used directly wherever a Writer is expected.
+   /// The outgoing response on a server session: a status code and headers, submitted in a single
+   /// explicit call, plus the response body. Response forwards write_some()/write()/write_eof() to
+   /// the body, so it can be used directly wherever a Writer is expected.
    ///
-   /// Submission (sending the HEADERS frame with whatever status()/set() calls have accumulated)
-   /// happens lazily on the first write, or explicitly via submit() -- e.g. to send headers before
-   /// any body bytes are ready. status()/set() calls after submission has happened are ignored.
+   /// Unlike a status/headers accumulator submitted lazily on first write, submit() sends the
+   /// HEADERS frame right away -- nghttp2 takes the whole header block in one call regardless, so
+   /// there's nothing to gain by letting callers dribble it in via setters first. A handler must
+   /// call submit() before its first write; write_some()/write()/write_eof() below don't check.
    class Response
    {
    public:
@@ -122,62 +123,35 @@ public:
       {
       }
 
-      /// Sets the status code to submit (default 200). No effect once submission has happened.
-      void status(unsigned int code) noexcept { status_ = code; }
-      unsigned int status() const noexcept { return status_; }
-
-      /// Adds a response header to submit. No effect once submission has happened.
-      void set(std::string name, std::string value)
+      /// Submits the response status/headers. Must be called exactly once, before any write.
+      boost::capy::io_task<> submit(unsigned int status = 200, Headers headers = {})
       {
-         headers_.emplace_back(std::move(name), std::move(value));
-      }
-
-      /// Submits the response status/headers now, if not already submitted -- otherwise a no-op.
-      /// Implicitly called by the first write_some()/write()/write_eof() below.
-      boost::capy::io_task<> submit()
-      {
-         if (std::exchange(submitted_, true))
-            co_return boost::capy::io_result<>{};
-         co_return co_await submit_(status_, headers_);
+         co_return co_await submit_(status, headers);
       }
 
       template <boost::capy::ConstBufferSequence CB>
       boost::capy::io_task<std::size_t> write_some(CB buffers)
       {
-         if (auto [ec] = co_await submit(); ec)
-            co_return {ec, 0};
          co_return co_await writer_.write_some(buffers);
       }
 
       template <boost::capy::ConstBufferSequence CB>
       boost::capy::io_task<std::size_t> write(CB buffers)
       {
-         if (auto [ec] = co_await submit(); ec)
-            co_return {ec, 0};
          co_return co_await writer_.write(buffers);
       }
 
       template <boost::capy::ConstBufferSequence CB>
       boost::capy::io_task<std::size_t> write_eof(CB buffers)
       {
-         if (auto [ec] = co_await submit(); ec)
-            co_return {ec, 0};
          co_return co_await writer_.write_eof(buffers);
       }
 
-      boost::capy::io_task<> write_eof()
-      {
-         if (auto [ec] = co_await submit(); ec)
-            co_return boost::capy::io_result<>{ec};
-         co_return co_await writer_.write_eof();
-      }
+      boost::capy::io_task<> write_eof() { co_return co_await writer_.write_eof(); }
 
    private:
       Writer writer_;
       SubmitFn submit_;
-      unsigned int status_ = 200;
-      Headers headers_;
-      bool submitted_ = false;
    };
 
    Session() = default;

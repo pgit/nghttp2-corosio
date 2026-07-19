@@ -188,6 +188,7 @@ TEST_F(ClientAsync, HelloWorld)
    custom = [](Session::Request request, Session::Response response) -> boost::capy::task<>
    {
       std::ignore = request;
+      [[maybe_unused]] auto r0 = co_await response.submit();
       [[maybe_unused]] auto r1 = co_await response.write_eof(boost::capy::make_buffer(hello));
       // [[maybe_unused]] auto r2 = co_await response.write_eof();
    };
@@ -206,6 +207,7 @@ TEST_F(ClientAsync, Custom)
 {
    custom = [](Session::Request request, Session::Response response) -> boost::capy::task<>
    {
+      [[maybe_unused]] auto submitted = co_await response.submit();
       std::array<std::uint8_t, 1024> buffer;
       for (;;)
       {
@@ -235,6 +237,7 @@ TEST_F(ClientAsync, IgnoreRequest)
    custom = [](Session::Request request, Session::Response response) -> boost::capy::task<>
    {
       std::ignore = request;
+      [[maybe_unused]] auto s = co_await response.submit();
       [[maybe_unused]] auto r = co_await response.write_eof();
    };
 
@@ -398,6 +401,7 @@ TEST_F(ClientAsync, YieldFuzz)
       static constexpr auto msg = "Hello, Client!"sv;
       std::uniform_int_distribution<> dist(0, 10);
       [[maybe_unused]] auto y1 = co_await nghttp2_corosio_test::yield(dist(gen));
+      [[maybe_unused]] auto s = co_await response.submit();
       [[maybe_unused]] auto r1 = co_await response.write(boost::capy::make_buffer(msg));
       [[maybe_unused]] auto y2 = co_await nghttp2_corosio_test::yield(dist(gen));
       [[maybe_unused]] auto r2 = co_await response.write_eof();
