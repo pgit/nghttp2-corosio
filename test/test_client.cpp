@@ -5,9 +5,8 @@
 #include <nghttp2-corosio/server.hpp>
 
 #include <boost/capy/buffers/make_buffer.hpp>
-#include <boost/capy/buffers/string_dynamic_buffer.hpp>
+#include <boost/capy/cond.hpp>
 #include <boost/capy/ex/run_async.hpp>
-#include <boost/capy/read.hpp>
 #include <boost/corosio/ipv4_address.hpp>
 
 #include <gtest/gtest.h>
@@ -67,7 +66,23 @@ boost::capy::task<> echo_request(std::uint16_t port, std::string_view payload, s
       co_return;
 
    auto [wec, wn] = co_await writer.write_eof(boost::capy::make_buffer(payload));
-   auto [rec, rn] = co_await boost::capy::read(reader, boost::capy::dynamic_buffer(echoed));
+
+   std::error_code rec;
+   std::array<char, 1024> buffer;
+   for (;;)
+   {
+      auto [ec, n] =
+         co_await reader.read_some(boost::capy::mutable_buffer(buffer.data(), buffer.size()));
+      echoed.append(buffer.data(), n);
+      if (ec)
+      {
+         // Reaching end-of-stream is how this loop is meant to end -- not a failure to report.
+         if (ec != boost::capy::cond::eof)
+            rec = ec;
+         break;
+      }
+   }
+
    ok = !wec && !rec;
 }
 

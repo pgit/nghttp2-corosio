@@ -188,8 +188,8 @@ TEST_F(ClientAsync, HelloWorld)
    custom = [](Session::Request request, Session::Response response) -> boost::capy::task<>
    {
       std::ignore = request;
-      [[maybe_unused]] auto r1 = co_await response.write(boost::capy::make_buffer(hello));
-      [[maybe_unused]] auto r2 = co_await response.write_eof();
+      [[maybe_unused]] auto r1 = co_await response.write_eof(boost::capy::make_buffer(hello));
+      // [[maybe_unused]] auto r2 = co_await response.write_eof();
    };
 
    run([](Session session) -> boost::capy::task<>

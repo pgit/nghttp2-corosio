@@ -53,13 +53,13 @@ boost::capy::task<> not_found(Session::Response response)
 
 boost::capy::io_task<> sleep(std::chrono::nanoseconds duration)
 {
-   co_return co_await boost::capy::delay(duration);
+   co_return co_await boost::corosio::delay(duration);
 }
 
 boost::capy::io_task<> yield(std::size_t count)
 {
    for (std::size_t i = 0; i < count; ++i)
-      if (auto [ec] = co_await boost::capy::delay(std::chrono::microseconds(1)); ec)
+      if (auto [ec] = co_await boost::corosio::delay(std::chrono::microseconds(1)); ec)
          co_return {ec};
    co_return {};
 }

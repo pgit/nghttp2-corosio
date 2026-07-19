@@ -119,6 +119,8 @@ RUN git clone --depth 1 -b v1.7.0 https://github.com/libbpf/libbpf && \
 #
 # nghttp2 with HTTP/3 support (based on OpenSSL)
 #
+# --enable-debug (very noisy)
+#
 ARG NGHTTP2_VERSION=v1.69.0
 RUN git clone --recursive --depth 1 --branch ${NGHTTP2_VERSION} https://github.com/nghttp2/nghttp2.git && \
     cd nghttp2 && \

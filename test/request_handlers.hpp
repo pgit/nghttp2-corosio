@@ -16,9 +16,9 @@
 #include <nghttp2-corosio/session.hpp>
 
 #include <boost/capy/buffers/make_buffer.hpp>
-#include <boost/capy/delay.hpp>
 #include <boost/capy/io_task.hpp>
 #include <boost/capy/task.hpp>
+#include <boost/corosio/delay.hpp>
 
 #include <array>
 #include <chrono>
@@ -53,7 +53,7 @@ boost::capy::io_task<> sleep(std::chrono::nanoseconds duration);
 
 /// Gives other coroutines on the same executor a chance to run, `count` times in a row. There's
 /// no bare "post via executor" awaitable in capy yet, so this rides a minimal delay() instead --
-/// see boost::capy::delay().
+/// see boost::corosio::delay().
 boost::capy::io_task<> yield(std::size_t count = 1);
 
 // =================================================================================================

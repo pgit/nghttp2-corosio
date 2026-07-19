@@ -5,7 +5,6 @@
 #include "task_group.hpp"
 
 #include <boost/capy/buffers.hpp>
-#include <boost/capy/buffers/string_dynamic_buffer.hpp>
 #include <boost/capy/ex/run_async.hpp>
 #include <boost/capy/read.hpp>
 #include <boost/capy/when_all.hpp>
