@@ -13,10 +13,12 @@
 #include <nghttp2-corosio/server.hpp>
 
 #include <boost/capy/buffers/make_buffer.hpp>
+#include <boost/capy/cond.hpp>
 #include <boost/capy/ex/run_async.hpp>
 #include <boost/capy/when_all.hpp>
 #include <boost/capy/when_any.hpp>
 #include <boost/corosio/ipv4_address.hpp>
+#include <boost/corosio/timeout.hpp>
 
 #include <gtest/gtest.h>
 
@@ -421,6 +423,211 @@ TEST_F(ClientAsync, YieldFuzz)
          [[maybe_unused]] auto y3 = co_await nghttp2_corosio_test::yield(dist(gen));
          [[maybe_unused]] auto received = co_await nghttp2_corosio_test::count(response);
       }
+   });
+}
+
+// =================================================================================================
+//
+// EOF handling, partial success, and timeouts -- ported from the corosio guide:
+// https://develop.corosio.cpp.al/corosio/4.guide/4m.error-handling.html#_eof_handling
+//
+// The guide specifies that end-of-stream is signalled by capy::cond::eof, that the composed
+// read() operation reports the bytes transferred so far alongside the error (partial success),
+// and that corosio::timeout() produces capy::cond::timeout (not capy::cond::canceled) when the
+// deadline fires before data arrives.
+//
+// =================================================================================================
+
+// -------------------------------------------------------------------------------------------------
+// EOF handling: verify that the last read_some() on a finished stream returns capy::cond::eof.
+// -------------------------------------------------------------------------------------------------
+
+TEST_F(ClientAsync, EofHandling_RequestReadSome)
+{
+   std::error_code eof_ec;
+   custom = [&eof_ec](Session::Request request, Session::Response response) -> boost::capy::task<>
+   {
+      std::array<std::uint8_t, 1024> buf;
+      for (;;)
+      {
+         auto [ec, n] =
+            co_await request.read_some(boost::capy::mutable_buffer(buf.data(), buf.size()));
+         if (ec)
+         {
+            eof_ec = ec;
+            break;
+         }
+      }
+      [[maybe_unused]] auto s = co_await response.submit();
+      [[maybe_unused]] auto r = co_await response.write_eof();
+   };
+
+   run([](Session session) -> boost::capy::task<>
+   {
+      auto [ec, writer, response] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      auto [wec, wn] = co_await writer.write_eof(boost::capy::make_buffer("hello"sv));
+      EXPECT_FALSE(wec);
+      auto [rec, body] = co_await nghttp2_corosio_test::read(response);
+      EXPECT_FALSE(rec);
+   });
+
+   EXPECT_EQ(eof_ec, boost::capy::cond::eof);
+}
+
+TEST_F(ClientAsync, EofHandling_ResponseReadSome)
+{
+   custom = [](Session::Request request, Session::Response response) -> boost::capy::task<>
+   {
+      std::ignore = request;
+      [[maybe_unused]] auto s = co_await response.submit();
+      [[maybe_unused]] auto r =
+         co_await response.write_eof(boost::capy::make_buffer("world"sv));
+   };
+
+   run([](Session session) -> boost::capy::task<>
+   {
+      auto [ec, writer, response] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      [[maybe_unused]] auto wr = co_await writer.write_eof();
+
+      std::array<char, 1024> buf;
+      std::error_code eof_ec;
+      for (;;)
+      {
+         auto [rec, n] =
+            co_await response.read_some(boost::capy::mutable_buffer(buf.data(), buf.size()));
+         if (rec)
+         {
+            eof_ec = rec;
+            break;
+         }
+      }
+      EXPECT_EQ(eof_ec, boost::capy::cond::eof);
+   });
+}
+
+// -------------------------------------------------------------------------------------------------
+// Partial success: read() reports the bytes transferred alongside capy::cond::eof when the stream
+// ends before the buffer is full (not just error + 0).
+// -------------------------------------------------------------------------------------------------
+
+TEST_F(ClientAsync, PartialSuccess_RequestRead)
+{
+   static constexpr auto payload = "1234567"sv; // 7 bytes, smaller than the 1024-byte buffer
+   std::error_code partial_ec;
+   std::size_t partial_n = 0;
+
+   custom = [&](Session::Request request, Session::Response response) -> boost::capy::task<>
+   {
+      std::array<std::uint8_t, 1024> buf;
+      auto [ec, n] = co_await request.read(boost::capy::mutable_buffer(buf.data(), buf.size()));
+      partial_ec = ec;
+      partial_n = n;
+      [[maybe_unused]] auto s = co_await response.submit();
+      [[maybe_unused]] auto r = co_await response.write_eof();
+   };
+
+   run([](Session session) -> boost::capy::task<>
+   {
+      auto [ec, writer, response] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      auto [wec, wn] = co_await writer.write_eof(boost::capy::make_buffer(payload));
+      EXPECT_FALSE(wec);
+      [[maybe_unused]] auto r = co_await nghttp2_corosio_test::count(response);
+   });
+
+   EXPECT_EQ(partial_ec, boost::capy::cond::eof);
+   EXPECT_EQ(partial_n, payload.size());
+}
+
+TEST_F(ClientAsync, PartialSuccess_ResponseRead)
+{
+   static constexpr auto payload = "1234567"sv; // 7 bytes, smaller than the 1024-byte buffer
+   custom = [](Session::Request request, Session::Response response) -> boost::capy::task<>
+   {
+      std::ignore = request;
+      [[maybe_unused]] auto s = co_await response.submit();
+      [[maybe_unused]] auto r =
+         co_await response.write_eof(boost::capy::make_buffer(payload));
+   };
+
+   run([](Session session) -> boost::capy::task<>
+   {
+      auto [ec, writer, response] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      [[maybe_unused]] auto wr = co_await writer.write_eof();
+
+      std::array<char, 1024> buf;
+      auto [rec, n] =
+         co_await response.read(boost::capy::mutable_buffer(buf.data(), buf.size()));
+      EXPECT_EQ(rec, boost::capy::cond::eof);
+      EXPECT_EQ(n, payload.size());
+   });
+}
+
+// -------------------------------------------------------------------------------------------------
+// Timeouts: wrapping a read_some() in corosio::timeout() produces capy::cond::timeout (not
+// capy::cond::canceled) when the deadline elapses before any data arrives.
+// -------------------------------------------------------------------------------------------------
+
+TEST_F(ClientAsync, Timeout_RequestReadSome)
+{
+   std::error_code timeout_ec;
+   custom = [&timeout_ec](Session::Request request,
+                          Session::Response response) -> boost::capy::task<>
+   {
+      std::array<std::uint8_t, 1024> buf;
+      // Client never sends body data, so the read_some suspends until the 50ms deadline fires.
+      auto [ec, n] = co_await boost::corosio::timeout(
+         request.read_some(boost::capy::mutable_buffer(buf.data(), buf.size())),
+         std::chrono::milliseconds(50));
+      timeout_ec = ec;
+      // Respond so the client-side read(response) can complete and stop the server.
+      [[maybe_unused]] auto s = co_await response.submit();
+      [[maybe_unused]] auto r = co_await response.write_eof();
+   };
+
+   run([](Session session) -> boost::capy::task<>
+   {
+      auto [ec, writer, response] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      // `writer` stays alive (no body sent) while the server's read_some times out.
+      // Once the server responds, drain the response so run_client's completion fires.
+      auto [rec, body] = co_await nghttp2_corosio_test::read(response);
+      EXPECT_FALSE(rec);
+   });
+
+   EXPECT_EQ(timeout_ec, boost::capy::cond::timeout);
+   EXPECT_NE(timeout_ec, boost::capy::cond::canceled);
+}
+
+TEST_F(ClientAsync, Timeout_ResponseReadSome)
+{
+   custom = [](Session::Request request, Session::Response response) -> boost::capy::task<>
+   {
+      std::ignore = request;
+      [[maybe_unused]] auto s = co_await response.submit();
+      // Delay before sending any body -- long enough that the client's 50ms timeout fires first.
+      [[maybe_unused]] auto d =
+         co_await nghttp2_corosio_test::sleep(std::chrono::milliseconds(500));
+      [[maybe_unused]] auto r = co_await response.write_eof();
+   };
+
+   run([](Session session) -> boost::capy::task<>
+   {
+      auto [ec, writer, response] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      [[maybe_unused]] auto wr = co_await writer.write_eof();
+
+      std::array<char, 1024> buf;
+      // Server delays 500ms before sending body data; our 50ms deadline fires first.
+      auto [rec, n] = co_await boost::corosio::timeout(
+         response.read_some(boost::capy::mutable_buffer(buf.data(), buf.size())),
+         std::chrono::milliseconds(50));
+      EXPECT_EQ(rec, boost::capy::cond::timeout);
+      EXPECT_NE(rec, boost::capy::cond::canceled);
+      EXPECT_EQ(n, 0u);
    });
 }
 
