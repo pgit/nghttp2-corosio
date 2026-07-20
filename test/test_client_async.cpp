@@ -631,4 +631,88 @@ TEST_F(ClientAsync, Timeout_ResponseReadSome)
    });
 }
 
+// -------------------------------------------------------------------------------------------------
+//
+// An unlimited upload/echo round trip, bounded only by a deadline -- how many bytes can the
+// server's /echo handler turn around before corosio::timeout() cuts it off? send() (client ->
+// server) and count_into() (server's echo -> client) have to run concurrently, the same as
+// PostRange above: once the body exceeds the HTTP/2 flow-control window (64KiB), the server can't
+// make room to echo more without the client reading, and the client can't finish sending without
+// the server reading. Both are raced together inside a single when_all(), which is itself what's
+// wrapped in the deadline.
+//
+// -------------------------------------------------------------------------------------------------
+
+TEST_F(ClientAsync, Timeout_UnlimitedEchoRoundTrip)
+{
+   run([](Session session) -> boost::capy::task<>
+   {
+      auto [ec, writer, response] = co_await session.submit_request("/echo");
+      EXPECT_FALSE(ec);
+
+      // `received` is a side channel, not read back from the timeout's result -- see
+      // count_into()'s doc comment for why the return value can't be trusted here.
+      std::size_t received = 0;
+      static constexpr auto deadline = std::chrono::milliseconds(300);
+      auto [tec, s1, s2] = co_await boost::corosio::timeout(
+         boost::capy::when_all(nghttp2_corosio_test::send(writer, rv::iota(std::uint8_t{0})),
+                               nghttp2_corosio_test::count_into(response, received)),
+         deadline);
+      EXPECT_EQ(tec, boost::capy::cond::timeout);
+      EXPECT_NE(tec, boost::capy::cond::canceled);
+
+      logi("Timeout_UnlimitedEchoRoundTrip: echoed {} bytes in {}ms", received, deadline.count());
+      EXPECT_GT(received, 0u);
+   });
+}
+
+// -------------------------------------------------------------------------------------------------
+//
+// Ported from anyhttp's WHEN_client_cancels_write_THEN_can_resume: measures how much backpressure
+// the echo loop can absorb before the client starts draining the response at all. The server's
+// /echo handler writes back everything it reads in lockstep (see request_handlers.cpp's echo()),
+// so with nothing draining the response, its outgoing window eventually closes, which stalls its
+// reads of the request body, which in turn closes the window the client is sending into -- once
+// that happens, even write_eof() alone can't complete until the window reopens, which only happens
+// once the client starts draining the response.
+//
+// -------------------------------------------------------------------------------------------------
+
+TEST_F(ClientAsync, ClientCancelsWrite_CanResume)
+{
+   run([](Session session) -> boost::capy::task<>
+   {
+      auto [ec, writer, response] = co_await session.submit_request("/echo");
+      EXPECT_FALSE(ec);
+
+      // Send as much data as possible within a budget, without draining the response at all --
+      // expect backpressure to close the window before the deadline fires. `sent` is the answer
+      // to "how much backpressure can the echo loop take before starting to receive", captured as
+      // a side channel for the same reason as count_into() above -- the timeout's own result
+      // won't survive, and send() doesn't report a byte count to begin with.
+      std::size_t sent = 0;
+      static constexpr auto budget = std::chrono::seconds(1);
+      auto [tec] = co_await boost::corosio::timeout(
+         nghttp2_corosio_test::send_into(writer, rv::iota(std::uint8_t{0}), sent), budget);
+      EXPECT_EQ(tec, boost::capy::cond::timeout);
+      logi("ClientCancelsWrite_CanResume: {} bytes absorbed before the window closed", sent);
+      EXPECT_GT(sent, 0u);
+
+      // With the window closed, even ending the upload alone can't complete immediately.
+      auto [eof_tec] =
+         co_await boost::corosio::timeout(writer.write_eof(), std::chrono::milliseconds(1));
+      EXPECT_EQ(eof_tec, boost::capy::cond::timeout);
+
+      // We don't control when the window reopens -- only draining the response does that -- so
+      // race the (now unbounded) EOF write against reading the response, concurrently.
+      std::size_t received = 0;
+      auto [wec, s1, s2] = co_await boost::capy::when_all(
+         writer.write_eof(), nghttp2_corosio_test::count_into(response, received));
+      EXPECT_FALSE(wec);
+
+      logi("ClientCancelsWrite_CanResume: {} bytes received after resuming", received);
+      EXPECT_GT(received, 0u);
+   });
+}
+
 } // namespace

@@ -69,6 +69,16 @@ boost::capy::io_task<std::string> read(Session::ClientResponse& response);
 /// Reads and discards the entire response body, returning its size.
 boost::capy::io_task<std::size_t> count(Session::ClientResponse& response);
 
+/// Like count(), but reports the running total via `received` as it accumulates, rather than only
+/// in the return value -- for racing a *composite* awaitable (e.g. a when_all()) against
+/// corosio::timeout(): when the deadline wins, timeout() discards the wrapped awaitable's actual
+/// result wholesale and substitutes a default-initialized payload (see corosio's
+/// timeout_awaitable.hpp, await_resume() -- the cancellation it propagates into when_all's
+/// children surfaces as cond::canceled on the *combined* result, which is exactly the condition
+/// that triggers the substitution), so the byte count would otherwise read back as 0 regardless of
+/// how much was actually transferred.
+boost::capy::io_task<> count_into(Session::ClientResponse& response, std::size_t& received);
+
 // -------------------------------------------------------------------------------------------------
 // Range support: send() overloads for arbitrary byte ranges, contiguous or not (e.g.
 // `std::views::iota(uint8_t(0)) | std::views::take(n)`, which is not contiguous).
@@ -103,6 +113,31 @@ boost::capy::io_task<> send(Session::Writer& writer, Range range)
 
       if (auto [ec, written] = co_await writer.write(boost::capy::const_buffer(buffer.data(), n));
           ec)
+         co_return {ec};
+   }
+   co_return {};
+}
+
+/// Like the non-contiguous send() above, but reports the running total of bytes actually written
+/// via `sent` as it goes, for the same reason as count_into(): send() itself never reports a byte
+/// count at all (only success/failure), and even if it did, the return value wouldn't survive
+/// being raced against corosio::timeout() (see count_into()'s doc comment).
+template <ByteRange Range>
+   requires(!std::ranges::contiguous_range<Range>)
+boost::capy::io_task<> send_into(Session::Writer& writer, Range range, std::size_t& sent)
+{
+   std::array<std::uint8_t, 16 * 1024> buffer;
+   auto it = std::ranges::begin(range);
+   auto last = std::ranges::end(range);
+   while (it != last)
+   {
+      std::size_t n = 0;
+      for (; n < buffer.size() && it != last; ++it)
+         buffer[n++] = static_cast<std::uint8_t>(*it);
+
+      auto [ec, written] = co_await writer.write(boost::capy::const_buffer(buffer.data(), n));
+      sent += written;
+      if (ec)
          co_return {ec};
    }
    co_return {};

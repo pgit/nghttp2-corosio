@@ -121,6 +121,24 @@ boost::capy::io_task<std::size_t> count(Session::ClientResponse& response)
    }
 }
 
+boost::capy::io_task<> count_into(Session::ClientResponse& response, std::size_t& received)
+{
+   std::array<std::uint8_t, 16 * 1024> buffer;
+   for (;;)
+   {
+      auto [ec, n] =
+         co_await response.read_some(boost::capy::mutable_buffer(buffer.data(), buffer.size()));
+      received += n;
+      if (ec)
+      {
+         // Reaching end-of-stream is how this loop is meant to end -- not a failure to report.
+         if (ec == boost::capy::cond::eof)
+            ec = {};
+         co_return {ec};
+      }
+   }
+}
+
 // =================================================================================================
 
 } // namespace nghttp2_corosio_test
