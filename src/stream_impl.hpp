@@ -13,6 +13,8 @@
 #include <boost/capy/read.hpp>
 #include <boost/capy/write.hpp>
 
+#include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -127,6 +129,10 @@ public:
    std::ptrdiff_t producer_callback(std::uint8_t* buf, std::size_t length,
                                     std::uint32_t* data_flags);
 
+   /// A genuine partial write: completes as soon as producer_callback() has been invoked once,
+   /// reporting however many bytes that single call actually pulled -- which may be less than
+   /// `buffers`' full size if nghttp2's flow-control window closes partway through. Callers that
+   /// want the rest sent too get that via write() below, not by write_some() looping internally.
    template <boost::capy::ConstBufferSequence CB>
    boost::capy::io_task<std::size_t> write_some(CB buffers)
    {
@@ -161,9 +167,23 @@ private:
       if (closed_)
          co_return {boost::capy::make_error_code(boost::capy::error::eof), 0};
 
-      pending_write_.resize(boost::capy::buffer_size(buffers));
-      boost::capy::buffer_copy(
-         boost::capy::mutable_buffer(pending_write_.data(), pending_write_.size()), buffers);
+      // Reference the caller's buffers, not a copy of their bytes: the WriteSink contract
+      // already requires `buffers` to stay alive until this co_await completes (see
+      // boost::capy::write()'s own documented precondition), so producer_callback() can read
+      // straight out of the caller's memory across however many invocations it takes. Only the
+      // (small, fixed-count) buffer *descriptors* are copied here, never the data they describe.
+      pending_count_ = 0;
+      pending_size_ = 0;
+      for (auto it = boost::capy::begin(buffers); it != boost::capy::end(buffers); ++it)
+      {
+         boost::capy::const_buffer b(*it);
+         if (b.size() == 0)
+            continue;
+         assert(pending_count_ < pending_.size());
+         pending_[pending_count_++] = b;
+         pending_size_ += b.size();
+      }
+
       write_offset_ = 0;
       write_eof_requested_ = eof;
       write_pending_ = true;
@@ -175,9 +195,10 @@ private:
       write_progress_.clear();
       auto [ec] = co_await write_progress_.wait();
       write_pending_ = false;
-      if (ec)
-         co_return {ec, 0};
-      co_return {{}, pending_write_.size()};
+      // write_offset_ reports actual progress in both cases now: on success it's the whole
+      // buffer for write_eof(), or whatever producer_callback() managed for write_some(); on
+      // error/cancellation, it's the (possibly zero) partial progress made before that happened.
+      co_return {ec, write_offset_};
    }
 
    void resume_write();
@@ -198,8 +219,16 @@ private:
    boost::capy::async_event read_ready_;
 
    // write side
-   std::vector<std::uint8_t> pending_write_;
-   std::size_t write_offset_ = 0;
+   //
+   // pending_ holds a *view* onto the current write's buffer descriptors (pointer+size pairs),
+   // not a copy of the bytes -- see write_impl()'s doc comment. Its fixed capacity matches
+   // capy's any_write_sink, which never hands Stream a scatter/gather sequence longer than its
+   // own iovec bound (boost::capy::detail::max_iovec_, 16 at the time of writing).
+   static constexpr std::size_t max_pending_buffers_ = 16;
+   std::array<boost::capy::const_buffer, max_pending_buffers_> pending_{};
+   std::size_t pending_count_ = 0;
+   std::size_t pending_size_ = 0; // total bytes across pending_[0, pending_count_)
+   std::size_t write_offset_ = 0; // bytes of pending_ consumed so far by producer_callback()
    bool write_pending_ = false;
    bool write_eof_requested_ = false;
    bool write_deferred_ = false;

@@ -50,15 +50,35 @@ std::ptrdiff_t Stream::producer_callback(std::uint8_t* buf, std::size_t length,
       return NGHTTP2_ERR_DEFERRED;
    }
 
+   // Copy directly out of the caller's buffers (pending_ references them, doesn't own them) at
+   // the current cumulative offset, walking however many of the descriptors are needed to fill
+   // `length` or exhaust what's left.
    std::size_t copied = 0;
-   if (write_offset_ < pending_write_.size())
+   std::size_t skip = write_offset_;
+   for (std::size_t i = 0; i < pending_count_ && copied < length; ++i)
    {
-      copied = std::min(length, pending_write_.size() - write_offset_);
-      std::memcpy(buf, pending_write_.data() + write_offset_, copied);
-      write_offset_ += copied;
+      auto const& b = pending_[i];
+      if (skip >= b.size())
+      {
+         skip -= b.size();
+         continue;
+      }
+      auto const avail = b.size() - skip;
+      auto const n = std::min(avail, length - copied);
+      std::memcpy(buf + copied, static_cast<const std::uint8_t*>(b.data()) + skip, n);
+      copied += n;
+      skip = 0;
    }
+   write_offset_ += copied;
 
-   if (write_offset_ == pending_write_.size())
+   // write_some()/write() (write_eof_requested_ == false) complete right here, after this one
+   // call, reporting whatever it actually copied -- genuine partial-write semantics, with
+   // boost::capy::write() (see Stream::write()) looping back for the remainder if the caller
+   // wants everything sent. write_eof(buffers) can't stop early like that: its contract is to
+   // send everything and only then mark EOF, atomically, so it keeps waiting across as many
+   // calls as it takes to fully drain pending_ first.
+   bool const fully_drained = write_offset_ == pending_size_;
+   if (fully_drained || !write_eof_requested_)
    {
       if (write_eof_requested_)
          *data_flags |= NGHTTP2_DATA_FLAG_EOF;
