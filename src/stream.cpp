@@ -20,12 +20,14 @@ void Stream::on_data(const std::uint8_t* data, std::size_t len)
 
 void Stream::on_read_eof()
 {
+   logd("[{}] on_read_eof", log_prefix_);
    read_eof_ = true;
    read_ready_.set();
 }
 
 void Stream::on_close()
 {
+   logd("[{}] on_close", log_prefix_);
    closed_ = true;
    read_ready_.set();
    write_progress_.set();
@@ -44,8 +46,11 @@ void Stream::consume(std::size_t n)
 std::ptrdiff_t Stream::producer_callback(std::uint8_t* buf, std::size_t length,
                                          std::uint32_t* data_flags)
 {
+   logd("[{}] write callback (buffer size={} bytes)", log_prefix_, length);
+
    if (!write_pending_)
    {
+      logd("[{}] write callback: nothing to send, DEFERRING", log_prefix_);
       write_deferred_ = true;
       return NGHTTP2_ERR_DEFERRED;
    }

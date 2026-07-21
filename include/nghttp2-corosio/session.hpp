@@ -1,5 +1,7 @@
 #pragma once
 
+#include "nghttp2-corosio/logging.hpp"
+
 #include <boost/capy/buffers.hpp>
 #include <boost/capy/ex/any_executor.hpp>
 #include <boost/capy/io/any_read_source.hpp>
@@ -45,7 +47,24 @@ public:
    public:
       Request(std::string path, Reader reader) : path_(std::move(path)), reader_(std::move(reader))
       {
+         logd("\x1b[1;35mServer::Request: ctor\x1b[0m");
       }
+
+      // reader_ is empty (operator bool() == false) after being moved from, which is what a
+      // moved-out husk looks like once it's passed through a chain of by-value handler layers
+      // (RequestHandler -> dispatch() -> the actual per-test handler, say) -- skip the log then,
+      // matching anyhttp's `if (impl)` guard in its own Request::reset(), so only the one object
+      // that's actually still holding the body logs its destruction.
+      ~Request()
+      {
+         if (reader_)
+            logd("\x1b[35mServer::Request: dtor\x1b[0m");
+      }
+
+      // Reader is move-only; the destructor above suppresses the implicit move members, so they
+      // need restating explicitly.
+      Request(Request&&) noexcept = default;
+      Request& operator=(Request&&) noexcept = default;
 
       std::string_view path() const noexcept { return path_; }
 
@@ -121,7 +140,21 @@ public:
       Response(Writer writer, SubmitFn submit)
          : writer_(std::move(writer)), submit_(std::move(submit))
       {
+         logd("\x1b[1;35mServer::Response: ctor\x1b[0m");
       }
+
+      // See Request::~Request() above -- writer_ goes empty on move-out, so this only fires for
+      // the one instance that's actually still holding the body.
+      ~Response()
+      {
+         if (writer_)
+            logd("\x1b[35mServer::Response: dtor\x1b[0m");
+      }
+
+      // Writer is move-only; the destructor above suppresses the implicit move members, so they
+      // need restating explicitly.
+      Response(Response&&) noexcept = default;
+      Response& operator=(Response&&) noexcept = default;
 
       /// Submits the response status/headers. Must be called exactly once, before any write.
       boost::capy::io_task<> submit(unsigned int status = 200, Headers headers = {})

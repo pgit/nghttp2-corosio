@@ -9,7 +9,9 @@
 #include <boost/capy/task.hpp>
 
 #include <cstdint>
+#include <format>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 
@@ -42,12 +44,23 @@ public:
    Impl(boost::capy::any_executor executor, boost::capy::any_stream stream, Role role,
         RequestHandler handler)
       : executor_(std::move(executor)), stream_(std::move(stream)), role_(role),
-        handler_(std::move(handler))
+        handler_(std::move(handler)),
+        log_prefix_(role_ == Role::server ? "\x1b[1;31mserver\x1b[0m" : "\x1b[1;32mclient\x1b[0m")
    {
    }
    ~Impl();
 
    boost::capy::any_executor get_executor() const noexcept { return executor_; }
+
+   /// Log tag for this session -- "server" or "client", ANSI-colored so concurrent sessions are
+   /// easy to tell apart in a terminal. See the stream_id overload for the per-stream variant
+   /// ("server.1"), used by the free-standing nghttp2 callbacks in session.cpp.
+   const std::string& log_prefix() const noexcept { return log_prefix_; }
+
+   std::string log_prefix(std::int32_t stream_id) const
+   {
+      return stream_id ? std::format("{}.{}", log_prefix_, stream_id) : log_prefix_;
+   }
 
    /// Sets up the nghttp2 session (callbacks, options, initial SETTINGS), then drives it via
    /// send_loop()/recv_loop() until the connection closes. On a server session, every incoming
@@ -63,7 +76,7 @@ public:
    /// Wakes a send_loop() suspended in write_ready_.wait(). Harmless to call when send_loop() is
    /// not currently waiting. Public because Stream also calls this after handing send_loop() new
    /// work (a submitted request/response, or bytes consumed that may reopen flow control).
-   void start_write() { write_ready_.set(); }
+   void start_write();
 
    /// Submits a request on a new stream (client sessions only). See Session::submit_request().
    boost::capy::io_task<Session::Writer, Session::ClientResponse>
@@ -113,10 +126,12 @@ private:
    boost::capy::any_stream stream_;
    Role role_;
    RequestHandler handler_;
+   std::string log_prefix_;
 
    nghttp2_session* session_ = nullptr;
    boost::capy::async_event write_ready_;
    std::unordered_map<std::int32_t, std::shared_ptr<Stream>> streams_;
+   std::size_t request_counter_ = 0; // number of server-side requests dispatched (create_stream())
 };
 
 // =================================================================================================

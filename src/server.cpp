@@ -23,10 +23,13 @@ Server::Impl::Impl(Config config)
      acceptor_(ioc_, boost::corosio::endpoint(boost::corosio::ipv6_address(config_.listen_address),
                                               config_.port))
 {
+   logi("Server: ctor");
 }
 
 Server::Impl::~Impl()
 {
+   logi("Server: destroy");
+
    auto& group = ioc_.use_service<detail::TaskGroup>();
    group.request_stop();
 
@@ -38,9 +41,18 @@ Server::Impl::~Impl()
    while (group.count() > 0)
    {
       ioc_.restart();
+      std::println(
+         "--- ~ ------------------------------------------------------------------------");
       if (ioc_.poll() == 0)
+      {
          ioc_.run_one();
+         std::println(
+            "--- ~ ------------------------------------------------------------------------");
+      }
    }
+
+   logi("Server: dtor");
+   std::println("------------------------------------------------------------------------------");
 }
 
 void Server::Impl::start()
@@ -52,7 +64,7 @@ void Server::Impl::start()
 boost::capy::task<> Server::Impl::accept_loop()
 {
    auto ep = acceptor_.local_endpoint();
-   logi("Listening on port {}", ep.port());
+   logi("Server: listening on {}:{}", config_.listen_address, ep.port());
 
    auto& group = ioc_.use_service<detail::TaskGroup>();
    auto token = co_await boost::capy::this_coro::stop_token;
@@ -65,7 +77,7 @@ boost::capy::task<> Server::Impl::accept_loop()
       {
          if (token.stop_requested())
             break;
-         logw("Accept error: {}", ec.message());
+         logw("accept: {}", ec.message());
          continue;
       }
 
@@ -83,7 +95,7 @@ boost::capy::task<> Server::Impl::accept_loop()
          address << remote.v4_address();
       else
          address << remote.v6_address();
-      logi("Connection from {}:{}", address.str(), remote.port());
+      logi("[{}:{}] new connection", address.str(), remote.port());
 
       // TODO: wrap `peer` in a TLS stream (corosio::openssl_stream / wolfssl_stream) here once
       // TLS support is added, before erasing it into `any_stream` below.
@@ -93,6 +105,8 @@ boost::capy::task<> Server::Impl::accept_loop()
                                                      Session::Impl::Role::server, config_.handler);
       group.spawn(ioc_.get_executor(), session->run());
    }
+
+   logi("accept loop: done");
 }
 
 // =================================================================================================

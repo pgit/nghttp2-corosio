@@ -6,8 +6,6 @@
 #include <array>
 #include <cstdlib>
 #include <print>
-#include <stdexcept>
-#include <string_view>
 #include <utility>
 
 namespace
@@ -52,22 +50,6 @@ boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
    [[maybe_unused]] auto result = co_await response.write_eof();
 }
 
-nghttp2_corosio::LogLevel parse_log_level(std::string_view name)
-{
-   if (name == "debug")
-      return nghttp2_corosio::LogLevel::debug;
-   if (name == "info")
-      return nghttp2_corosio::LogLevel::info;
-   if (name == "warn")
-      return nghttp2_corosio::LogLevel::warn;
-   if (name == "error")
-      return nghttp2_corosio::LogLevel::error;
-   if (name == "off")
-      return nghttp2_corosio::LogLevel::off;
-   throw std::invalid_argument(
-      std::format("unknown log level '{}' (want debug/info/warn/error/off)", name));
-}
-
 } // namespace
 
 int main(int argc, char* argv[])
@@ -76,7 +58,7 @@ int main(int argc, char* argv[])
    if (argc > 1)
       config.port = static_cast<std::uint16_t>(std::atoi(argv[1]));
    if (argc > 2)
-      nghttp2_corosio::set_log_level(parse_log_level(argv[2]));
+      nghttp2_corosio::set_log_level(nghttp2_corosio::parse_log_level(argv[2]));
    config.handler = echo;
 
    nghttp2_corosio::Server server(config);

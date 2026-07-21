@@ -1,6 +1,8 @@
 #pragma once
 
+#include "nghttp2-corosio/logging.hpp"
 #include "nghttp2-corosio/session.hpp"
+#include "session_impl.hpp"
 
 #include <boost/capy/buffers.hpp>
 #include <boost/capy/buffers/buffer_copy.hpp>
@@ -41,16 +43,27 @@ class Stream : public std::enable_shared_from_this<Stream>
 {
 public:
    Stream(std::shared_ptr<Session::Impl> session, std::int32_t id)
-      : session_(std::move(session)), id_(id)
+      : session_(std::move(session)), id_(id), log_prefix_(session_->log_prefix(id_))
    {
+      logd("[{}] Stream: ctor", log_prefix_);
    }
 
+   ~Stream() { logd("[{}] Stream: dtor", log_prefix_); }
+
    std::int32_t id() const noexcept { return id_; }
+
+   /// Log tag for this stream, e.g. "server.1". Cached at construction; refreshed by set_id() for
+   /// a client-submitted request, whose real stream ID isn't known until after submission.
+   const std::string& log_prefix() const noexcept { return log_prefix_; }
 
    /// Fixes up the stream ID once nghttp2_submit_request2() assigns the real one -- the client
    /// doesn't know it until after that call, but the Stream (as the data provider's source) has
    /// to exist before making it.
-   void set_id(std::int32_t id) noexcept { id_ = id; }
+   void set_id(std::int32_t id) noexcept
+   {
+      id_ = id;
+      log_prefix_ = session_->log_prefix(id_);
+   }
 
    /// Set by on_header_callback() as the :path pseudo-header arrives (server sessions only).
    void set_path(std::string path) { path_ = std::move(path); }
@@ -93,6 +106,7 @@ public:
    template <boost::capy::MutableBufferSequence MB>
    boost::capy::io_task<std::size_t> read_some(MB buffers)
    {
+      logd("[{}] read_some:", log_prefix_);
       for (;;)
       {
          if (!read_buffer_.empty())
@@ -101,10 +115,16 @@ public:
                buffers, boost::capy::const_buffer(read_buffer_.data(), read_buffer_.size()));
             read_buffer_.erase(read_buffer_.begin(), read_buffer_.begin() + copied);
             consume(copied);
+            logd("[{}] read_some: finished, {} bytes ({} bytes still buffered, eof_received={})",
+                 log_prefix_, copied, read_buffer_.size(), read_eof_);
             co_return {{}, copied};
          }
          if (read_eof_ || closed_)
+         {
+            logd("[{}] read_some: finished, 0 bytes pending, eof_received={}", log_prefix_,
+                 read_eof_);
             co_return {boost::capy::make_error_code(boost::capy::error::eof), 0};
+         }
 
          read_ready_.clear();
          if (auto [ec] = co_await read_ready_.wait(); ec)
@@ -208,6 +228,7 @@ private:
    std::int32_t id_;
    bool closed_ = false;
    std::string path_;
+   std::string log_prefix_;
 
    // response status (client sessions only)
    int status_ = -1;
