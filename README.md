@@ -4,19 +4,15 @@
 [nghttp2-asio](https://github.com/nghttp2/nghttp2-asio) on top of the
 [capy](https://github.com/cppalliance/capy) / [corosio](https://github.com/cppalliance/corosio)
 async framework. But instead of going for simple callbacks and custom interfaces as in nghttp2-asio,
-nghttp2-corosio is a coroutine-native implementation wrapping
-[nghttp2](https://github.com/nghttp2/nghttp2). Both capy and corosio are themselves pre-1.0 and
-evolving, and the API surface here (`Server`/`Session`/`Client`) is expected to change significantly
-as HTTP/2 support grows beyond the current echo handler.
+nghttp2-corosio is based on coroutines and interfaces conforming to async concepts.
 
 ## Project Setup
 
 This project is meant to be used in a C++ devcontainer
 ([pgit/cpp-devcontainer](https://github.com/pgit/cpp-devcontainer)).
 
-It also doubles as an experiment in using [Claude Code](https://claude.com/claude-code) to drive most
-of the day-to-day implementation work — expect commit history and code comments that reflect an
-AI-assisted workflow.
+It also is an experiment in AI-assisted work flows, using [Claude Code](https://claude.com/claude-code) to drive most
+of the implementation work. However, when doing so, it references [anyhttp](https://github.com/pgit/anyhttp) frequently — my previous attempt to implement this, on to of ASIO.
 
 ## Build
 

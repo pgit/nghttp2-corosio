@@ -321,10 +321,13 @@ boost::capy::task<> Session::Impl::run()
 
 // -------------------------------------------------------------------------------------------------
 
+//
+// This function calls nghttp2_session_mem_send() and collects the retrieved data in a send buffer,
+// until either the buffer is full or no more data is returned. Then, the buffered data is written
+// to the stream. Finally, if still no more data is returned, it waits for a signal to resume.
+//
 boost::capy::io_task<> Session::Impl::send_loop()
 {
-   // Accumulates small chunks returned by nghttp2_session_mem_send2() so we don't issue a
-   // separate stream write for each one.
    std::vector<std::uint8_t> pending;
    pending.reserve(1460);
 
@@ -363,6 +366,7 @@ boost::capy::io_task<> Session::Impl::send_loop()
             mloge("send loop: error writing {} bytes: {}", bytes_to_write, ec.message());
             break;
          }
+         mlogd("send loop: writing {} bytes... done", bytes_to_write);
          continue;
       }
 
