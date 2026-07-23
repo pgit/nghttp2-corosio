@@ -31,6 +31,7 @@ void Stream::on_close()
    closed_ = true;
    read_ready_.set();
    write_progress_.set();
+   status_ready_.set();
 }
 
 // -------------------------------------------------------------------------------------------------

@@ -57,11 +57,11 @@ boost::capy::io_task<> sleep(std::chrono::nanoseconds duration);
 boost::capy::io_task<> yield(std::size_t count = 1);
 
 // =================================================================================================
-// Client-side helpers, used by the ClientAsync tests to drive a Session::Writer /
+// Client-side helpers, used by the ClientAsync tests to drive a Session::ClientRequest /
 // Session::ClientResponse pair.
 
 /// Writes `bytes` zero-based, incrementing byte values, then closes the request body.
-boost::capy::io_task<> send(Session::Writer& writer, std::size_t bytes);
+boost::capy::io_task<> send(Session::ClientRequest& request, std::size_t bytes);
 
 /// Reads the entire response body into a string.
 boost::capy::io_task<std::string> read(Session::ClientResponse& response);
@@ -80,6 +80,17 @@ boost::capy::io_task<std::size_t> count(Session::ClientResponse& response);
 boost::capy::io_task<> count_into(Session::ClientResponse& response, std::size_t& received);
 
 // -------------------------------------------------------------------------------------------------
+// Overloads taking a ClientRequest directly: get_response() first, then delegate to the
+// ClientResponse overload above. Lets a caller race a response against an in-flight write (see
+// PostRange's doc comment in test_client_async.cpp) without a separate get_response() call of its
+// own -- get_response() can be awaited concurrently with the write regardless of which coroutine
+// actually does the awaiting.
+
+boost::capy::io_task<std::string> read(Session::ClientRequest& request);
+boost::capy::io_task<std::size_t> count(Session::ClientRequest& request);
+boost::capy::io_task<> count_into(Session::ClientRequest& request, std::size_t& received);
+
+// -------------------------------------------------------------------------------------------------
 // Range support: send() overloads for arbitrary byte ranges, contiguous or not (e.g.
 // `std::views::iota(uint8_t(0)) | std::views::take(n)`, which is not contiguous).
 
@@ -89,9 +100,9 @@ concept ByteRange = std::ranges::range<Range> && (sizeof(std::ranges::range_valu
 /// A contiguous byte range can be handed to the writer directly, without copying.
 template <ByteRange Range>
    requires std::ranges::contiguous_range<Range>
-boost::capy::io_task<> send(Session::Writer& writer, Range range)
+boost::capy::io_task<> send(Session::ClientRequest& request, Range range)
 {
-   auto [ec, written] = co_await writer.write(
+   auto [ec, written] = co_await request.write(
       boost::capy::make_buffer(std::ranges::data(range), std::ranges::size(range)));
    co_return {ec};
 }
@@ -100,7 +111,7 @@ boost::capy::io_task<> send(Session::Writer& writer, Range range)
 /// buffer first, chunk by chunk.
 template <ByteRange Range>
    requires(!std::ranges::contiguous_range<Range>)
-boost::capy::io_task<> send(Session::Writer& writer, Range range)
+boost::capy::io_task<> send(Session::ClientRequest& request, Range range)
 {
    std::array<std::uint8_t, 16 * 1024> buffer;
    auto it = std::ranges::begin(range);
@@ -111,7 +122,7 @@ boost::capy::io_task<> send(Session::Writer& writer, Range range)
       for (; n < buffer.size() && it != last; ++it)
          buffer[n++] = static_cast<std::uint8_t>(*it);
 
-      if (auto [ec, written] = co_await writer.write(boost::capy::const_buffer(buffer.data(), n));
+      if (auto [ec, written] = co_await request.write(boost::capy::const_buffer(buffer.data(), n));
           ec)
          co_return {ec};
    }
@@ -124,7 +135,7 @@ boost::capy::io_task<> send(Session::Writer& writer, Range range)
 /// being raced against corosio::timeout() (see count_into()'s doc comment).
 template <ByteRange Range>
    requires(!std::ranges::contiguous_range<Range>)
-boost::capy::io_task<> send_into(Session::Writer& writer, Range range, std::size_t& sent)
+boost::capy::io_task<> send_into(Session::ClientRequest& request, Range range, std::size_t& sent)
 {
    std::array<std::uint8_t, 16 * 1024> buffer;
    auto it = std::ranges::begin(range);
@@ -135,7 +146,7 @@ boost::capy::io_task<> send_into(Session::Writer& writer, Range range, std::size
       for (; n < buffer.size() && it != last; ++it)
          buffer[n++] = static_cast<std::uint8_t>(*it);
 
-      auto [ec, written] = co_await writer.write(boost::capy::const_buffer(buffer.data(), n));
+      auto [ec, written] = co_await request.write(boost::capy::const_buffer(buffer.data(), n));
       sent += written;
       if (ec)
          co_return {ec};
@@ -146,10 +157,10 @@ boost::capy::io_task<> send_into(Session::Writer& writer, Range range, std::size
 /// Sends `range`, then force-closes the request body regardless of whether the send completed
 /// (e.g. after cancellation) -- mirrors anyhttp's sendAndForceEOF().
 template <ByteRange Range>
-boost::capy::io_task<> sendAndForceEOF(Session::Writer& writer, Range range)
+boost::capy::io_task<> sendAndForceEOF(Session::ClientRequest& request, Range range)
 {
-   auto [ec] = co_await send(writer, std::move(range));
-   auto [eof_ec] = co_await writer.write_eof();
+   auto [ec] = co_await send(request, std::move(range));
+   auto [eof_ec] = co_await request.write_eof();
    co_return {ec ? ec : eof_ec};
 }
 

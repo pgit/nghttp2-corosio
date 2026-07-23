@@ -167,8 +167,9 @@ int on_invalid_header_callback(nghttp2_session*, const nghttp2_frame* frame, ngh
 int on_frame_recv_callback(nghttp2_session*, const nghttp2_frame* frame, void* user_data)
 {
    auto* session = static_cast<Session::Impl*>(user_data);
-   logd("[{}] on_frame_recv_callback: {} length={} flags={}", session->log_prefix(frame->hd.stream_id),
-        frame_type_name(frame->hd.type), frame->hd.length, frame->hd.flags);
+   logd("[{}] on_frame_recv_callback: {} length={} flags={}",
+        session->log_prefix(frame->hd.stream_id), frame_type_name(frame->hd.type), frame->hd.length,
+        frame->hd.flags);
 
    // Full request headers received: dispatch the (currently hardcoded) request handler.
    if (frame->hd.type == NGHTTP2_HEADERS && frame->headers.cat == NGHTTP2_HCAT_REQUEST)
@@ -204,8 +205,9 @@ int on_data_chunk_recv_callback(nghttp2_session* raw_session, std::uint8_t, std:
 int on_frame_send_callback(nghttp2_session*, const nghttp2_frame* frame, void* user_data)
 {
    auto* session = static_cast<Session::Impl*>(user_data);
-   logd("[{}] on_frame_send_callback: {} length={} flags={}", session->log_prefix(frame->hd.stream_id),
-        frame_type_name(frame->hd.type), frame->hd.length, frame->hd.flags);
+   logd("[{}] on_frame_send_callback: {} length={} flags={}",
+        session->log_prefix(frame->hd.stream_id), frame_type_name(frame->hd.type), frame->hd.length,
+        frame->hd.flags);
    return 0;
 }
 
@@ -258,8 +260,7 @@ Session::~Session() = default;
 
 Session::executor_type Session::get_executor() const noexcept { return impl_->get_executor(); }
 
-boost::capy::io_task<Session::Writer, Session::ClientResponse>
-Session::submit_request(std::string_view path)
+boost::capy::io_task<Session::ClientRequest> Session::submit_request(std::string_view path)
 {
    return impl_->submit_request(path);
 }
@@ -299,10 +300,20 @@ boost::capy::task<> Session::Impl::run()
 
    mlogd("session created");
 
+#if 0
+   // const uint32_t window_size = 256 * 1024 * 1024;
+   // const uint32_t window_size = 64 * 1024;
+   const uint32_t window_size = 1024 * 1024;
+   std::array<nghttp2_settings_entry, 2> iv{{{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100},
+                                             {NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE, window_size}}};
+   nghttp2_submit_settings(session_, NGHTTP2_FLAG_NONE, iv.data(), iv.size());
+   nghttp2_session_set_local_window_size(session_, NGHTTP2_FLAG_NONE, 0, window_size);
+#else
    nghttp2_settings_entry ent{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100};
    nghttp2_submit_settings(session_, NGHTTP2_FLAG_NONE, &ent, 1);
+#endif
 
-   [[maybe_unused]] auto result = co_await boost::capy::when_all(send_loop(), recv_loop());
+   std::ignore = co_await boost::capy::when_all(send_loop(), recv_loop());
 
    // Abort any streams that never closed at the protocol level -- e.g. abandoned by the user
    // without writing/reading anything, or still in flight when the session ended (connection
@@ -319,7 +330,10 @@ boost::capy::task<> Session::Impl::run()
    mlogd("session ended");
 }
 
-// -------------------------------------------------------------------------------------------------
+// =================================================================================================
+
+#define mylogd(...)
+// #define mylogd(...) mlogd(__VA_ARGS__) // too noisy, even for debug
 
 //
 // This function calls nghttp2_session_mem_send() and collects the retrieved data in a send buffer,
@@ -334,7 +348,9 @@ boost::capy::io_task<> Session::Impl::send_loop()
    for (;;)
    {
       const std::uint8_t* data = nullptr;
+      mylogd("send loop: nghttp2_session_mem_send...");
       auto nread = nghttp2_session_mem_send2(session_, &data);
+      mylogd("send loop: nghttp2_session_mem_send... {} bytes", nread);
       if (nread < 0)
       {
          mloge("send loop: nghttp2_session_mem_send2 failed: {}",
@@ -355,7 +371,7 @@ boost::capy::io_task<> Session::Impl::send_loop()
       if (const auto bytes_to_write = pending.size() + static_cast<std::size_t>(nread);
           bytes_to_write > 0)
       {
-         mlogd("send loop: writing {} bytes...", bytes_to_write);
+         mylogd("send loop: writing {} bytes...", bytes_to_write);
          std::array<boost::capy::const_buffer, 2> seq{
             boost::capy::const_buffer(pending.data(), pending.size()),
             boost::capy::const_buffer(data, static_cast<std::size_t>(nread))};
@@ -366,7 +382,7 @@ boost::capy::io_task<> Session::Impl::send_loop()
             mloge("send loop: error writing {} bytes: {}", bytes_to_write, ec.message());
             break;
          }
-         mlogd("send loop: writing {} bytes... done", bytes_to_write);
+         mylogd("send loop: writing {} bytes... done", bytes_to_write);
          continue;
       }
 
@@ -375,13 +391,13 @@ boost::capy::io_task<> Session::Impl::send_loop()
       if (!nghttp2_session_want_read(session_) && !nghttp2_session_want_write(session_))
          break;
 
-      mlogd("send loop: waiting...");
+      mylogd("send loop: waiting...");
       write_ready_.clear();
       if (auto [ec] = co_await write_ready_.wait(); ec)
          break;
    }
 
-   mlogd("send loop: done");
+   mylogd("send loop: done");
    co_return boost::capy::io_result<>{};
 }
 
@@ -397,11 +413,11 @@ boost::capy::io_task<> Session::Impl::recv_loop()
          co_await stream_.read_some(boost::capy::mutable_buffer(buffer.data(), buffer.size()));
       if (ec)
       {
-         mlogd("recv loop: {}, terminating session", ec.message());
+         mylogd("recv loop: {}, terminating session", ec.message());
          break;
       }
 
-      mlogd("read: nghttp2_session_mem_recv2... ({} bytes)", n);
+      mylogd("read: nghttp2_session_mem_recv2... ({} bytes)", n);
       if (auto rv = nghttp2_session_mem_recv2(session_, buffer.data(), n); rv < 0)
       {
          mloge("recv loop: nghttp2_session_mem_recv2 failed: {}",
@@ -410,14 +426,14 @@ boost::capy::io_task<> Session::Impl::recv_loop()
          start_write();
          break;
       }
-      mlogd("read: nghttp2_session_mem_recv2... done ({})", n);
+      mylogd("read: nghttp2_session_mem_recv2... done ({})", n);
 
-      // Parsing the new input may have produced output to send (e.g. a SETTINGS ack).
+      // parsing received data may have have produced output to send (e.g. a SETTINGS ack)
       start_write();
    }
 
    nghttp2_session_terminate_session(session_, NGHTTP2_NO_ERROR);
-   start_write(); // wake send_loop() so it can flush the GOAWAY and notice it's done
+   start_write(); // wake send_loop() so it can flush the GOAWAY
 
    mlogi("recv loop: done, served {} requests", request_counter_);
    co_return boost::capy::io_result<>{};
@@ -427,12 +443,14 @@ boost::capy::io_task<> Session::Impl::recv_loop()
 
 void Session::Impl::start_write()
 {
-   mlogd("start_write: signalling write loop...");
+   mylogd("start_write: signalling write loop...");
    write_ready_.set();
-   mlogd("start_write: signalling write loop... done");
+   mylogd("start_write: signalling write loop... done");
 }
 
-// -------------------------------------------------------------------------------------------------
+#undef mylogd
+
+// =================================================================================================
 
 std::shared_ptr<Stream> Session::Impl::create_stream(std::int32_t id)
 {
@@ -495,6 +513,7 @@ boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream
    {
       logw("[{}] handle_request: no handler configured, closing response empty",
            log_prefix(stream->id()));
+
       [[maybe_unused]] auto submitted = co_await response.submit();
       [[maybe_unused]] auto result = co_await response.write_eof();
    }
@@ -528,12 +547,11 @@ boost::capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> st
 
 // -------------------------------------------------------------------------------------------------
 
-boost::capy::io_task<Session::Writer, Session::ClientResponse>
-Session::Impl::submit_request(std::string_view path)
+boost::capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::string_view path)
 {
    if (role_ != Role::client)
-      co_return {std::make_error_code(std::errc::operation_not_permitted), Session::Writer{},
-                 Session::ClientResponse{Session::Reader{}, {}}};
+      co_return {std::make_error_code(std::errc::operation_not_permitted),
+                 Session::ClientRequest{Session::Writer{}, {}}};
 
    // Placeholder stream ID: nghttp2_submit_request2() below assigns the real one, and we need
    // *some* object to hand it as the data provider's source before that happens.
@@ -553,8 +571,8 @@ Session::Impl::submit_request(std::string_view path)
    if (id < 0)
    {
       mloge("submit_request: nghttp2_submit_request2 failed: {}", nghttp2_strerror(id));
-      co_return {std::make_error_code(std::errc::invalid_argument), Session::Writer{},
-                 Session::ClientResponse{Session::Reader{}, {}}};
+      co_return {std::make_error_code(std::errc::invalid_argument),
+                 Session::ClientRequest{Session::Writer{}, {}}};
    }
 
    // nghttp2 now holds `stream.get()` as the data provider's source, so fix up its ID in place
@@ -564,9 +582,13 @@ Session::Impl::submit_request(std::string_view path)
    start_write();
 
    logi("[{}] submit_request: {}", log_prefix(id), path);
-   co_return {std::error_code{}, Session::Writer(StreamWriter(stream)),
-              Session::ClientResponse(Session::Reader(StreamReader(stream)),
-                                      [stream] { return stream->status(); })};
+   co_return {std::error_code{},
+              Session::ClientRequest(Session::Writer(StreamWriter(stream)),
+                                     [stream]() -> boost::capy::io_task<Session::ClientResponse>
+   {
+      auto [ec, status] = co_await stream->status();
+      co_return {ec, Session::ClientResponse(status, Session::Reader(StreamReader(stream)))};
+   })};
 }
 
 // =================================================================================================

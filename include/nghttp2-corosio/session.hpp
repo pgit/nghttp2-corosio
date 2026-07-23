@@ -85,24 +85,20 @@ public:
       Reader reader_;
    };
 
-   /// The incoming response on a client session: an asynchronously-arriving `:status`
-   /// pseudo-header plus the response body. ClientResponse forwards read_some()/read() to the
-   /// body, so it can be used directly wherever a Reader is expected.
+   /// The incoming response on a client session: the `:status` pseudo-header -- already known by
+   /// the time a caller has one of these, see ClientRequest::get_response() -- plus the response
+   /// body. ClientResponse forwards read_some()/read() to the body, so it can be used directly
+   /// wherever a Reader is expected.
    class ClientResponse
    {
    public:
-      /// Waits for the `:status` pseudo-header to arrive; constructed by Session::Impl, which is
-      /// the only thing that knows how to ask the underlying Stream.
-      using StatusFn = std::function<boost::capy::io_task<unsigned int>()>;
-
-      ClientResponse(Reader reader, StatusFn status)
-         : reader_(std::move(reader)), status_(std::move(status))
+      ClientResponse(unsigned int status, Reader reader)
+         : status_(status), reader_(std::move(reader))
       {
       }
 
-      /// Waits for the response's `:status` pseudo-header to arrive. Safe to call more than
-      /// once -- returns immediately once the status has already been captured.
-      boost::capy::io_task<unsigned int> status() { return status_(); }
+      /// The response's `:status` pseudo-header.
+      unsigned int status() const noexcept { return status_; }
 
       template <boost::capy::MutableBufferSequence MB>
       auto read_some(MB buffers)
@@ -117,8 +113,63 @@ public:
       }
 
    private:
+      unsigned int status_;
       Reader reader_;
-      StatusFn status_;
+   };
+
+   /// The outgoing request on a client session: a writable body plus get_response(), which
+   /// resolves once the response's `:status` pseudo-header has arrived. ClientRequest forwards
+   /// write_some()/write()/write_eof() to the body, so it can be used directly wherever a Writer
+   /// is expected.
+   ///
+   /// Mirrors Response's write+submit() pairing on the server side, in the other direction:
+   /// get_response() is the client's one-shot "wait for the peer" step, the way submit() is the
+   /// server's one-shot "commit to headers" step. Unlike submit(), get_response() doesn't gate
+   /// writing -- the request body can (and, for bodies larger than the HTTP/2 flow-control window,
+   /// must) be written concurrently with awaiting it, e.g. via when_all().
+   class ClientRequest
+   {
+   public:
+      /// Waits for the response's `:status` pseudo-header to arrive and returns the resulting
+      /// ClientResponse; constructed by Session::Impl, which is the only thing that knows how to
+      /// ask the underlying Stream.
+      using GetResponseFn = std::function<boost::capy::io_task<ClientResponse>()>;
+
+      ClientRequest(Writer writer, GetResponseFn get_response)
+         : writer_(std::move(writer)), get_response_(std::move(get_response))
+      {
+      }
+
+      template <boost::capy::ConstBufferSequence CB>
+      boost::capy::io_task<std::size_t> write_some(CB buffers)
+      {
+         co_return co_await writer_.write_some(buffers);
+      }
+
+      template <boost::capy::ConstBufferSequence CB>
+      boost::capy::io_task<std::size_t> write(CB buffers)
+      {
+         co_return co_await writer_.write(buffers);
+      }
+
+      template <boost::capy::ConstBufferSequence CB>
+      boost::capy::io_task<std::size_t> write_eof(CB buffers)
+      {
+         co_return co_await writer_.write_eof(buffers);
+      }
+
+      boost::capy::io_task<> write_eof() { co_return co_await writer_.write_eof(); }
+
+      /// Waits for the response to arrive. Safe to call more than once -- returns immediately
+      /// once the response has already arrived. Safe to await concurrently with writing the
+      /// request body (e.g. via when_all()) -- necessary whenever the body is larger than the
+      /// HTTP/2 flow-control window, since some handlers won't submit a response until they've
+      /// read at least some of the request (see Response's doc comment on submit() timing).
+      boost::capy::io_task<ClientResponse> get_response() { return get_response_(); }
+
+   private:
+      Writer writer_;
+      GetResponseFn get_response_;
    };
 
    /// The outgoing response on a server session: a status code and headers, submitted in a single
@@ -198,11 +249,11 @@ public:
    using executor_type = boost::capy::any_executor;
    executor_type get_executor() const noexcept;
 
-   /// Submits a request on a new stream (client sessions only) and returns a Writer for the
-   /// request body and a ClientResponse for the response. Pseudo-headers beyond :method/:path
-   /// are currently fixed (POST, http, an authority derived from the peer endpoint) -- a real
-   /// headers API will come later.
-   boost::capy::io_task<Writer, ClientResponse> submit_request(std::string_view path);
+   /// Submits a request on a new stream (client sessions only) and returns a ClientRequest: a
+   /// writable request body plus get_response(), which resolves once the response's `:status`
+   /// pseudo-header has arrived. Pseudo-headers beyond :method/:path are currently fixed (POST,
+   /// http, an authority derived from the peer endpoint) -- a real headers API will come later.
+   boost::capy::io_task<ClientRequest> submit_request(std::string_view path);
 
 private:
    std::shared_ptr<Impl> impl_;

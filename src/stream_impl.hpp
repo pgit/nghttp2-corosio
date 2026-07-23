@@ -78,7 +78,8 @@ public:
    }
 
    /// Waits for the response's :status pseudo-header to arrive, or returns immediately if it
-   /// already has.
+   /// already has. Also wakes -- with an eof error, since no status is ever coming -- if the
+   /// stream closes first (see on_close()), e.g. a server torn down mid-request.
    boost::capy::io_task<unsigned int> status()
    {
       if (status_ < 0)
@@ -86,6 +87,8 @@ public:
          status_ready_.clear();
          if (auto [ec] = co_await status_ready_.wait(); ec)
             co_return {ec, 0u};
+         if (status_ < 0)
+            co_return {boost::capy::make_error_code(boost::capy::error::eof), 0u};
       }
       co_return {{}, static_cast<unsigned int>(status_)};
    }

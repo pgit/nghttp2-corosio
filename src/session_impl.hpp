@@ -79,8 +79,7 @@ public:
    void start_write();
 
    /// Submits a request on a new stream (client sessions only). See Session::submit_request().
-   boost::capy::io_task<Session::Writer, Session::ClientResponse>
-   submit_request(std::string_view path);
+   boost::capy::io_task<Session::ClientRequest> submit_request(std::string_view path);
 
    std::shared_ptr<Stream> create_stream(std::int32_t id);
    std::shared_ptr<Stream> find_stream(std::int32_t id) const;
@@ -119,7 +118,8 @@ private:
    /// Builds a Request/Response pair for a newly-arrived request and hands them to `handler_` (if
    /// set; otherwise the response is just closed empty). The response isn't submitted here -- the
    /// handler is responsible for calling `response.submit(status, headers)` before its first
-   /// write. Spawned (detached) per request by the HEADERS/REQUEST case in on_frame_recv_callback().
+   /// write. Spawned (detached) per request by the HEADERS/REQUEST case in
+   /// on_frame_recv_callback().
    boost::capy::task<> handle_request(std::shared_ptr<Stream> stream);
 
    boost::capy::any_executor executor_;

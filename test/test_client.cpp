@@ -70,11 +70,15 @@ boost::capy::task<> echo_request(std::uint16_t port, std::string_view payload, s
    if (ec)
       co_return;
 
-   auto [sec, writer, reader] = co_await session.submit_request("/echo");
+   auto [sec, request] = co_await session.submit_request("/echo");
    if (sec)
       co_return;
 
-   auto [wec, wn] = co_await writer.write_eof(boost::capy::make_buffer(payload));
+   auto [wec, wn] = co_await request.write_eof(boost::capy::make_buffer(payload));
+
+   auto [gec, reader] = co_await request.get_response();
+   if (gec)
+      co_return;
 
    std::error_code rec;
    std::array<char, 1024> buffer;

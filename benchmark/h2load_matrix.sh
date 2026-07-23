@@ -23,15 +23,14 @@
 set -e
 
 URL="${URL:-http://localhost:8080/echo}"
-DURATION="${DURATION:-1s}"
-WARMUP="${WARMUP:-500ms}"
+DURATION="${DURATION:-200ms}"
+WARMUP="${WARMUP:-50ms}"
 DATA="${DATA:-}"
-# VALUES=(1 2 3 4 5 6 7 8 9 10 12 14 16 18 20 24 28 32 36 40)
-VALUES=(1 2 3 4 6 8)
-for ((i=1; i<=10; i++)); do VALUES+=($((i * 10))); done
+VALUES=(1 2 3 4 5 6 7 8 9 10 12 14 16 18 20 24 28 32 36 40 44 48 52 56 60 64 68 72 76 80 84 88 92 96 100)
+# VALUES=(1 2 3 4 6 8 10 20 30 40 50 60 70 80 90 100)
+# for ((i=1; i<=10; i++)); do VALUES+=($((i * 10))); done
 
-# ARGS=(-D $DURATION --warm-up-time $WARMUP)
-ARGS=(-n 10000)
+ARGS=(-D $DURATION --warm-up-time $WARMUP)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATFILE="${SCRIPT_DIR}/results.dat"
 LOGFILE="${SCRIPT_DIR}/h2load_matrix.log"

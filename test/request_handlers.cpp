@@ -76,9 +76,9 @@ boost::capy::io_task<> yield(std::size_t count)
 
 // =================================================================================================
 
-boost::capy::io_task<> send(Session::Writer& writer, std::size_t bytes)
+boost::capy::io_task<> send(Session::ClientRequest& request, std::size_t bytes)
 {
-   co_return co_await sendAndForceEOF(writer,
+   co_return co_await sendAndForceEOF(request,
                                       std::views::iota(std::uint8_t{0}) | std::views::take(bytes));
 }
 
@@ -137,6 +137,32 @@ boost::capy::io_task<> count_into(Session::ClientResponse& response, std::size_t
          co_return {ec};
       }
    }
+}
+
+// -------------------------------------------------------------------------------------------------
+
+boost::capy::io_task<std::string> read(Session::ClientRequest& request)
+{
+   auto [ec, response] = co_await request.get_response();
+   if (ec)
+      co_return {ec, {}};
+   co_return co_await read(response);
+}
+
+boost::capy::io_task<std::size_t> count(Session::ClientRequest& request)
+{
+   auto [ec, response] = co_await request.get_response();
+   if (ec)
+      co_return {ec, 0u};
+   co_return co_await count(response);
+}
+
+boost::capy::io_task<> count_into(Session::ClientRequest& request, std::size_t& received)
+{
+   auto [ec, response] = co_await request.get_response();
+   if (ec)
+      co_return {ec};
+   co_return co_await count_into(response, received);
 }
 
 // =================================================================================================
