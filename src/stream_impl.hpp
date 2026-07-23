@@ -6,6 +6,7 @@
 
 #include <boost/capy/buffers.hpp>
 #include <boost/capy/buffers/buffer_copy.hpp>
+#include <boost/capy/buffers/buffer_param.hpp>
 #include <boost/capy/concept/read_source.hpp>
 #include <boost/capy/concept/write_sink.hpp>
 #include <boost/capy/error.hpp>
@@ -19,6 +20,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <utility>
@@ -97,7 +99,10 @@ public:
    // Read side, fed by on_data_chunk_recv_callback() and END_STREAM detection in
    // on_frame_recv_callback(). Consumers see this through StreamReader's read_some()/read().
 
-   /// Appends bytes delivered by on_data_chunk_recv_callback() and wakes a suspended read.
+   /// Delivers bytes from on_data_chunk_recv_callback(). If a read_some() call is currently
+   /// parked with nothing buffered, copies straight into its destination buffers via read_sink_
+   /// -- no intermediate storage at all. Only whatever doesn't fit there (or arrives when nothing
+   /// is parked) gets copied into a new chunks_ entry. Either way, wakes a suspended read.
    void on_data(const std::uint8_t* data, std::size_t len);
 
    /// Marks the read side as ended (peer sent END_STREAM) and wakes a suspended read.
@@ -110,28 +115,89 @@ public:
    boost::capy::io_task<std::size_t> read_some(MB buffers)
    {
       logd("[{}] read_some:", log_prefix_);
+
+      boost::capy::buffer_param bp(buffers);
+      std::size_t total = 0;
+
+      // Drain whatever is already queued, oldest first. Draining always starts at the front and
+      // stops as soon as the destination is full, so at most the front chunk is ever partially
+      // consumed -- front_offset_ alone tracks that, popped once exhausted. O(chunks)
+      // buffer_copy() calls, never the O(bytes already delivered) shift that erasing from the
+      // front of one flat vector would cost.
+      while (!chunks_.empty())
+      {
+         auto dst = bp.data();
+         if (dst.empty())
+            break;
+         auto& chunk = chunks_.front();
+         boost::capy::const_buffer src(chunk.data() + front_offset_, chunk.size() - front_offset_);
+         auto const n = boost::capy::buffer_copy(dst, src);
+         bp.consume(n);
+         front_offset_ += n;
+         total += n;
+         if (front_offset_ == chunk.size())
+         {
+            chunks_.pop_front();
+            front_offset_ = 0;
+         }
+      }
+
+      if (total > 0)
+      {
+         consume(total);
+         logd("[{}] read_some: finished, {} bytes ({} chunks still buffered, eof_received={})",
+              log_prefix_, total, chunks_.size(), read_eof_);
+         co_return {{}, total};
+      }
+
+      if (read_eof_ || closed_)
+      {
+         logd("[{}] read_some: finished, 0 bytes pending, eof_received={}", log_prefix_,
+              read_eof_);
+         co_return {boost::capy::make_error_code(boost::capy::error::eof), 0};
+      }
+
+      // Nothing buffered: park here and publish `bp` via read_sink_ so on_data() can copy an
+      // incoming chunk straight into the caller's buffers -- zero copies into chunks_ at all, in
+      // the steady-state case where this call is already waiting when the next DATA frame lands.
+      // Mirrors anyhttp's NGHttp2Stream::call_read_handler(), which delivers directly to a
+      // pending read handler and only buffers what it can't hand off immediately.
+      struct Sink : ReadSink
+      {
+         boost::capy::buffer_param<MB>& bp;
+         std::size_t copied = 0;
+         explicit Sink(boost::capy::buffer_param<MB>& bp) : bp(bp) {}
+         std::size_t put(const std::uint8_t* data, std::size_t len) override
+         {
+            auto const n = boost::capy::buffer_copy(bp.data(), boost::capy::const_buffer(data, len));
+            bp.consume(n);
+            copied += n;
+            return n;
+         }
+      } sink(bp);
+
       for (;;)
       {
-         if (!read_buffer_.empty())
+         read_sink_ = &sink;
+         read_ready_.clear();
+         auto [ec] = co_await read_ready_.wait();
+         read_sink_ = nullptr;
+
+         if (sink.copied > 0)
          {
-            auto copied = boost::capy::buffer_copy(
-               buffers, boost::capy::const_buffer(read_buffer_.data(), read_buffer_.size()));
-            read_buffer_.erase(read_buffer_.begin(), read_buffer_.begin() + copied);
-            consume(copied);
-            logd("[{}] read_some: finished, {} bytes ({} bytes still buffered, eof_received={})",
-                 log_prefix_, copied, read_buffer_.size(), read_eof_);
-            co_return {{}, copied};
+            consume(sink.copied);
+            logd("[{}] read_some: finished, {} bytes delivered directly (eof_received={})",
+                 log_prefix_, sink.copied, read_eof_);
+            co_return {{}, sink.copied};
          }
+         if (ec)
+            co_return {ec, 0};
          if (read_eof_ || closed_)
          {
             logd("[{}] read_some: finished, 0 bytes pending, eof_received={}", log_prefix_,
                  read_eof_);
             co_return {boost::capy::make_error_code(boost::capy::error::eof), 0};
          }
-
-         read_ready_.clear();
-         if (auto [ec] = co_await read_ready_.wait(); ec)
-            co_return {ec, 0};
       }
    }
 
@@ -238,7 +304,29 @@ private:
    boost::capy::async_event status_ready_;
 
    // read side
-   std::vector<std::uint8_t> read_buffer_;
+   //
+   // Chunks of bytes that arrived (via on_data()) while no read_some() call was parked waiting
+   // for them.
+   std::deque<std::vector<std::uint8_t>> chunks_;
+
+   // How much of chunks_.front() a prior read_some() call has already taken. Only the front
+   // chunk can ever be partially consumed -- draining always proceeds front-to-back and stops as
+   // soon as the destination is full -- so a single offset suffices; it resets to 0 whenever the
+   // front chunk is fully drained and popped.
+   std::size_t front_offset_ = 0;
+
+   // Type-erased handle for a parked read_some() call's destination buffers. Set only while such
+   // a call is suspended in read_ready_.wait() with chunks_ empty; on_data() uses it, when
+   // non-null, to copy an incoming chunk directly into the caller's buffers, bypassing chunks_
+   // entirely for whatever fits. See read_some()'s local `Sink` type for the concrete
+   // implementation.
+   struct ReadSink
+   {
+      virtual ~ReadSink() = default;
+      virtual std::size_t put(const std::uint8_t* data, std::size_t len) = 0;
+   };
+   ReadSink* read_sink_ = nullptr;
+
    bool read_eof_ = false;
    boost::capy::async_event read_ready_;
 

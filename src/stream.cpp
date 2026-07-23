@@ -14,7 +14,14 @@ namespace nghttp2_corosio
 
 void Stream::on_data(const std::uint8_t* data, std::size_t len)
 {
-   read_buffer_.insert(read_buffer_.end(), data, data + len);
+   if (read_sink_)
+   {
+      auto const n = read_sink_->put(data, len);
+      data += n;
+      len -= n;
+   }
+   if (len)
+      chunks_.emplace_back(data, data + len);
    read_ready_.set();
 }
 
