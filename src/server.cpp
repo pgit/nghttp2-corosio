@@ -1,4 +1,5 @@
 #include "nghttp2-corosio/server.hpp"
+#include "nghttp2-corosio/formatter.hpp"
 #include "nghttp2-corosio/logging.hpp"
 #include "server_impl.hpp"
 #include "session_impl.hpp"
@@ -10,8 +11,6 @@
 #include <boost/corosio/ipv6_address.hpp>
 #include <boost/corosio/socket_option.hpp>
 #include <boost/corosio/tcp_socket.hpp>
-
-#include <sstream>
 
 namespace nghttp2_corosio
 {
@@ -64,7 +63,7 @@ void Server::Impl::start()
 boost::capy::task<> Server::Impl::accept_loop()
 {
    auto ep = acceptor_.local_endpoint();
-   logi("Server: listening on {}:{}", config_.listen_address, ep.port());
+   logi("Server: listening on {}", ep);
 
    auto& group = ioc_.use_service<detail::TaskGroup>();
    auto token = co_await boost::capy::this_coro::stop_token;
@@ -87,15 +86,7 @@ boost::capy::task<> Server::Impl::accept_loop()
       // round trips by tens of milliseconds.
       peer.set_option(boost::corosio::socket_option::no_delay(true));
 
-      // corosio's address types only support operator<<, not std::formatter, so route through a
-      // stream to build the string logi() can format.
-      auto remote = peer.remote_endpoint();
-      std::ostringstream address;
-      if (remote.is_v4())
-         address << remote.v4_address();
-      else
-         address << remote.v6_address();
-      logi("[{}:{}] new connection", address.str(), remote.port());
+      logi("[{}] new connection", peer.remote_endpoint());
 
       // TODO: wrap `peer` in a TLS stream (corosio::openssl_stream / wolfssl_stream) here once
       // TLS support is added, before erasing it into `any_stream` below.

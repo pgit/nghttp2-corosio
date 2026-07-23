@@ -1,4 +1,5 @@
 #include "nghttp2-corosio/session.hpp"
+#include "nghttp2-corosio/formatter.hpp"
 #include "nghttp2-corosio/logging.hpp"
 #include "session_impl.hpp"
 #include "stream_impl.hpp"
@@ -534,6 +535,9 @@ boost::capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> st
    for (const auto& [name, value] : headers)
       nva.push_back(make_nv(name, value));
 
+   for (const auto& nv : nva)
+      logd("[{}]   {}", log_prefix(stream->id()), nv);
+
    nghttp2_data_provider2 prd{.source = {.ptr = stream.get()},
                               .read_callback = data_source_read_callback};
    if (nghttp2_submit_response2(session_, stream->id(), nva.data(), nva.size(), &prd))
@@ -566,6 +570,9 @@ boost::capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::
       make_nv(":path", path_str),
       make_nv(":authority", "localhost"),
    };
+
+   for (const auto& nv : nva)
+      mlogd("  {}", nv);
 
    auto id = nghttp2_submit_request2(session_, nullptr, nva, std::size(nva), &prd, stream.get());
    if (id < 0)
