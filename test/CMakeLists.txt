@@ -58,3 +58,22 @@ if (VALGRIND_EXECUTABLE)
 else()
     message(STATUS "valgrind not found -- ValgrindMemcheck test will not be registered")
 endif()
+
+# =================================================================================================
+#
+# test/data/1m is a 1 MiB random payload used as a larger h2load body (benchmark/h2load_matrix.sh's
+# DATA env var) than the checked-in test/data/1k and test/data/64kminus1. Unlike those, it's not
+# committed -- it's undiffable binary noise with no reason to sit in git history -- and is instead
+# generated on demand by this target. Not a dependency of any other target, so plain builds/tests
+# never pay for it; run it explicitly (`cmake --build build --target test_data_1m`) before a
+# benchmark sweep that needs it.
+#
+# =================================================================================================
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/data/1m
+    COMMAND head -c 1048576 /dev/urandom > ${CMAKE_CURRENT_SOURCE_DIR}/data/1m
+    COMMENT "Generating test/data/1m (1 MiB random payload)"
+    VERBATIM
+)
+add_custom_target(test_data_1m DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/1m)
