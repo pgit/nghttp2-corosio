@@ -7,8 +7,8 @@
 #include <boost/capy/buffers.hpp>
 #include <boost/capy/buffers/buffer_copy.hpp>
 #include <boost/capy/buffers/buffer_param.hpp>
-#include <boost/capy/concept/read_source.hpp>
-#include <boost/capy/concept/write_sink.hpp>
+#include <boost/capy/concept/read_stream.hpp>
+#include <boost/capy/concept/write_stream.hpp>
 #include <boost/capy/error.hpp>
 #include <boost/capy/ex/async_event.hpp>
 #include <boost/capy/io_result.hpp>
@@ -334,8 +334,9 @@ private:
    //
    // pending_ holds a *view* onto the current write's buffer descriptors (pointer+size pairs),
    // not a copy of the bytes -- see write_impl()'s doc comment. Its fixed capacity matches
-   // capy's any_write_sink, which never hands Stream a scatter/gather sequence longer than its
-   // own iovec bound (boost::capy::detail::max_iovec_, 16 at the time of writing).
+   // any_write_sink (any_write_sink.hpp) and capy's own any_write_stream, neither of which ever
+   // hands Stream a scatter/gather sequence longer than capy's iovec bound
+   // (boost::capy::detail::max_iovec_, 16 at the time of writing).
    static constexpr std::size_t max_pending_buffers_ = 16;
    std::array<boost::capy::const_buffer, max_pending_buffers_> pending_{};
    std::size_t pending_count_ = 0;
@@ -349,7 +350,7 @@ private:
 
 // =================================================================================================
 
-/// Concrete ReadSource wrapping a Stream's read side. Type-erased into Session::Reader at the
+/// Concrete ReadStream wrapping a Stream's read side. Type-erased into Session::Reader at the
 /// public API boundary.
 class StreamReader
 {
@@ -372,10 +373,10 @@ private:
    std::shared_ptr<Stream> stream_;
 };
 
-static_assert(boost::capy::ReadSource<StreamReader>);
+static_assert(boost::capy::ReadStream<StreamReader>);
 
-/// Concrete WriteSink wrapping a Stream's write side. Type-erased into Session::Writer at the
-/// public API boundary.
+/// Concrete WriteStream (plus write_eof(), see any_write_sink.hpp) wrapping a Stream's write side.
+/// Type-erased into Session::Writer at the public API boundary.
 class StreamWriter
 {
 public:
@@ -405,7 +406,7 @@ private:
    std::shared_ptr<Stream> stream_;
 };
 
-static_assert(boost::capy::WriteSink<StreamWriter>);
+static_assert(boost::capy::WriteStream<StreamWriter>);
 
 // =================================================================================================
 

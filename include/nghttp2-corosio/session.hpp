@@ -1,11 +1,11 @@
 #pragma once
 
+#include "nghttp2-corosio/any_read_source.hpp"
+#include "nghttp2-corosio/any_write_sink.hpp"
 #include "nghttp2-corosio/logging.hpp"
 
 #include <boost/capy/buffers.hpp>
 #include <boost/capy/ex/any_executor.hpp>
-#include <boost/capy/io/any_read_source.hpp>
-#include <boost/capy/io/any_write_sink.hpp>
 #include <boost/capy/io_task.hpp>
 
 #include <functional>
@@ -26,14 +26,14 @@ public:
    class Impl;
 
    /// A readable body: the incoming request on a server session, or the incoming response on a
-   /// client session. Any concrete type satisfying capy's ReadSource concept can be type-erased
-   /// into one of these -- see https://develop.capy.cpp.al/capy/6.streams/6.intro.html.
-   using Reader = boost::capy::any_read_source;
+   /// client session. Any concrete type providing read_some() (see any_read_source.hpp) can be
+   /// type-erased into one of these.
+   using Reader = any_read_source;
 
    /// A writable body: the outgoing response on a server session, or the outgoing request on a
-   /// client session. Any concrete type satisfying capy's WriteSink concept can be type-erased
-   /// into one of these.
-   using Writer = boost::capy::any_write_sink;
+   /// client session. Any concrete type providing write_some()/write_eof() (see any_write_sink.hpp)
+   /// can be type-erased into one of these.
+   using Writer = any_write_sink;
 
    /// An ordered list of header name/value pairs, in submission order. Used both for
    /// Response::set() and (once request headers are captured beyond :path) incoming requests.
