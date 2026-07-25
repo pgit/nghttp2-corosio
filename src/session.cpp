@@ -539,7 +539,7 @@ boost::capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> st
       nva.push_back(make_nv(name, value));
 
    for (const auto& nv : nva)
-      logd("[{}]   {}", log_prefix(stream->id()), nv);
+      logd("[{0}]   \x1b[1;34m{1:n}\x1b[0m: {1:v}", log_prefix(stream->id()), nv);
 
    nghttp2_data_provider2 prd{.source = {.ptr = stream.get()},
                               .read_callback = data_source_read_callback};
