@@ -71,6 +71,25 @@ constexpr std::string_view log_level_name(LogLevel level)
    }
 }
 
+/// ANSI-colored variant of log_level_name(), so levels are visually distinguishable when scanning
+/// interleaved output: debug dim, info uncolored, warn yellow, error bold red.
+constexpr std::string_view log_level_color_name(LogLevel level)
+{
+   switch (level)
+   {
+   case LogLevel::debug:
+      return "\x1b[2mdebug\x1b[0m";
+   case LogLevel::info:
+      return "info";
+   case LogLevel::warn:
+      return "\x1b[33mwarn\x1b[0m";
+   case LogLevel::error:
+      return "\x1b[1;31merror\x1b[0m";
+   default:
+      return "off";
+   }
+}
+
 /// Wall-clock timestamp for the current log line, e.g. "2026-07-21 20:55:31.017".
 inline std::string log_timestamp()
 {
@@ -91,7 +110,7 @@ inline std::string log_timestamp()
       if ((level) >= ::nghttp2_corosio::log_level())                                               \
       {                                                                                            \
          std::print("[{}] [{}] ", ::nghttp2_corosio::detail::log_timestamp(),                      \
-                     ::nghttp2_corosio::detail::log_level_name(level));                            \
+                     ::nghttp2_corosio::detail::log_level_color_name(level));                      \
          std::println(__VA_ARGS__);                                                                \
       }                                                                                            \
    } while (false)
