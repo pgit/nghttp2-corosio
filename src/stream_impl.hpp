@@ -333,10 +333,11 @@ private:
    // write side
    //
    // pending_ holds a *view* onto the current write's buffer descriptors (pointer+size pairs),
-   // not a copy of the bytes -- see write_impl()'s doc comment. Its fixed capacity matches
-   // any_write_sink (any_write_sink.hpp) and capy's own any_write_stream, neither of which ever
-   // hands Stream a scatter/gather sequence longer than capy's iovec bound
-   // (boost::capy::detail::max_iovec_, 16 at the time of writing).
+   // not a copy of the bytes -- see write_impl()'s doc comment. Its fixed capacity matches capy's
+   // own any_write_stream (used for write_some()/write()) and Session::Response/ClientRequest's
+   // write_eof() flattening step (session.hpp), neither of which ever hands Stream a
+   // scatter/gather sequence longer than capy's iovec bound (boost::capy::detail::max_iovec_, 16
+   // at the time of writing).
    static constexpr std::size_t max_pending_buffers_ = 16;
    std::array<boost::capy::const_buffer, max_pending_buffers_> pending_{};
    std::size_t pending_count_ = 0;
@@ -351,7 +352,8 @@ private:
 // =================================================================================================
 
 /// Concrete ReadStream wrapping a Stream's read side. Type-erased into Session::Reader at the
-/// public API boundary.
+/// public API boundary. Only read_some() is needed: Session::Request/ClientResponse::read()
+/// composes it via the free boost::capy::read() algorithm rather than a forwarding member here.
 class StreamReader
 {
 public:
@@ -363,20 +365,18 @@ public:
       return stream_->read_some(buffers);
    }
 
-   template <boost::capy::MutableBufferSequence MB>
-   boost::capy::io_task<std::size_t> read(MB buffers)
-   {
-      return stream_->read(buffers);
-   }
-
 private:
    std::shared_ptr<Stream> stream_;
 };
 
 static_assert(boost::capy::ReadStream<StreamReader>);
 
-/// Concrete WriteStream (plus write_eof(), see any_write_sink.hpp) wrapping a Stream's write side.
-/// Type-erased into Session::Writer at the public API boundary.
+/// Concrete WriteStream wrapping a Stream's write side. Type-erased into Session::Writer at the
+/// public API boundary. Only write_some() is needed here: Session::Response/ClientRequest::write()
+/// composes it via the free boost::capy::write() algorithm, and write_eof() bypasses Writer/
+/// StreamWriter entirely -- Session::Impl binds it straight to the owning Stream (see
+/// Session::Response::WriteEofFn's doc comment in session.hpp), since capy's WriteStream concept
+/// has no notion of it.
 class StreamWriter
 {
 public:
@@ -387,20 +387,6 @@ public:
    {
       return stream_->write_some(buffers);
    }
-
-   template <boost::capy::ConstBufferSequence CB>
-   boost::capy::io_task<std::size_t> write(CB buffers)
-   {
-      return stream_->write(buffers);
-   }
-
-   template <boost::capy::ConstBufferSequence CB>
-   boost::capy::io_task<std::size_t> write_eof(CB buffers)
-   {
-      return stream_->write_eof(buffers);
-   }
-
-   boost::capy::io_task<> write_eof() { return stream_->write_eof(); }
 
 private:
    std::shared_ptr<Stream> stream_;

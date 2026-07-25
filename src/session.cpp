@@ -16,6 +16,7 @@
 #include <array>
 #include <charconv>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -504,7 +505,9 @@ boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream
    Session::Request request(stream->path(), Session::Reader(StreamReader(stream)));
    Session::Response response{Session::Writer(StreamWriter(stream)),
                               [self, stream](unsigned int status, const Session::Headers& headers)
-   { return self->submit_response(stream, status, headers); }};
+   { return self->submit_response(stream, status, headers); },
+                              [stream](std::span<boost::capy::const_buffer const> buffers)
+   { return stream->write_eof(buffers); }};
 
    if (handler_)
    {
@@ -555,7 +558,7 @@ boost::capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::
 {
    if (role_ != Role::client)
       co_return {std::make_error_code(std::errc::operation_not_permitted),
-                 Session::ClientRequest{Session::Writer{}, {}}};
+                 Session::ClientRequest{Session::Writer{}, {}, {}}};
 
    // Placeholder stream ID: nghttp2_submit_request2() below assigns the real one, and we need
    // *some* object to hand it as the data provider's source before that happens.
@@ -579,7 +582,7 @@ boost::capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::
    {
       mloge("submit_request: nghttp2_submit_request2 failed: {}", nghttp2_strerror(id));
       co_return {std::make_error_code(std::errc::invalid_argument),
-                 Session::ClientRequest{Session::Writer{}, {}}};
+                 Session::ClientRequest{Session::Writer{}, {}, {}}};
    }
 
    // nghttp2 now holds `stream.get()` as the data provider's source, so fix up its ID in place
@@ -591,6 +594,8 @@ boost::capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::
    logi("[{}] submit_request: {}", log_prefix(id), path);
    co_return {std::error_code{},
               Session::ClientRequest(Session::Writer(StreamWriter(stream)),
+                                     [stream](std::span<boost::capy::const_buffer const> buffers)
+   { return stream->write_eof(buffers); },
                                      [stream]() -> boost::capy::io_task<Session::ClientResponse>
    {
       auto [ec, status] = co_await stream->status();

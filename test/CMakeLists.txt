@@ -7,6 +7,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(nghttp2-corosio-tests
     request_handlers.cpp
+    test_any_read_stream_timeout_bug.cpp
     test_client.cpp
     test_client_async.cpp
     test_server.cpp

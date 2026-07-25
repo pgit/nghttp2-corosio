@@ -1,15 +1,19 @@
 #pragma once
 
-#include "nghttp2-corosio/any_read_source.hpp"
-#include "nghttp2-corosio/any_write_sink.hpp"
 #include "nghttp2-corosio/logging.hpp"
 
 #include <boost/capy/buffers.hpp>
+#include <boost/capy/detail/buffer_array.hpp>
 #include <boost/capy/ex/any_executor.hpp>
+#include <boost/capy/io/any_read_stream.hpp>
+#include <boost/capy/io/any_write_stream.hpp>
 #include <boost/capy/io_task.hpp>
+#include <boost/capy/read.hpp>
+#include <boost/capy/write.hpp>
 
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,14 +30,16 @@ public:
    class Impl;
 
    /// A readable body: the incoming request on a server session, or the incoming response on a
-   /// client session. Any concrete type providing read_some() (see any_read_source.hpp) can be
-   /// type-erased into one of these.
-   using Reader = any_read_source;
+   /// client session. Any concrete type satisfying capy's ReadStream concept can be type-erased
+   /// into one of these -- see https://develop.capy.cpp.al/capy/6.streams/6.intro.html.
+   using Reader = boost::capy::any_read_stream;
 
    /// A writable body: the outgoing response on a server session, or the outgoing request on a
-   /// client session. Any concrete type providing write_some()/write_eof() (see any_write_sink.hpp)
-   /// can be type-erased into one of these.
-   using Writer = any_write_sink;
+   /// client session. Any concrete type satisfying capy's WriteStream concept can be type-erased
+   /// into one of these -- see https://develop.capy.cpp.al/capy/6.streams/6.intro.html. Note this
+   /// covers only write_some()/write(); write_eof() (signaling HTTP/2 END_STREAM) isn't part of
+   /// capy's WriteStream, so Response/ClientRequest carry it separately as a WriteEofFn callback.
+   using Writer = boost::capy::any_write_stream;
 
    /// An ordered list of header name/value pairs, in submission order. Used both for
    /// Response::set() and (once request headers are captured beyond :path) incoming requests.
@@ -69,15 +75,15 @@ public:
       std::string_view path() const noexcept { return path_; }
 
       template <boost::capy::MutableBufferSequence MB>
-      auto read_some(MB buffers)
+      boost::capy::io_task<std::size_t> read_some(MB buffers)
       {
-         return reader_.read_some(buffers);
+         co_return co_await reader_.read_some(buffers);
       }
 
       template <boost::capy::MutableBufferSequence MB>
       boost::capy::io_task<std::size_t> read(MB buffers)
       {
-         return reader_.read(buffers);
+         return boost::capy::read(reader_, buffers);
       }
 
    private:
@@ -101,15 +107,15 @@ public:
       unsigned int status() const noexcept { return status_; }
 
       template <boost::capy::MutableBufferSequence MB>
-      auto read_some(MB buffers)
+      boost::capy::io_task<std::size_t> read_some(MB buffers)
       {
-         return reader_.read_some(buffers);
+         co_return co_await reader_.read_some(buffers);
       }
 
       template <boost::capy::MutableBufferSequence MB>
       boost::capy::io_task<std::size_t> read(MB buffers)
       {
-         return reader_.read(buffers);
+         return boost::capy::read(reader_, buffers);
       }
 
    private:
@@ -135,8 +141,18 @@ public:
       /// ask the underlying Stream.
       using GetResponseFn = std::function<boost::capy::io_task<ClientResponse>()>;
 
-      ClientRequest(Writer writer, GetResponseFn get_response)
-         : writer_(std::move(writer)), get_response_(std::move(get_response))
+      /// Writes (or, with an empty buffer sequence, just signals) end-of-body and marks the
+      /// HTTP/2 stream half-closed. capy's WriteStream concept has no such notion -- there's no
+      /// free algorithm to fall back on the way read()/write() do -- so, like SubmitFn/
+      /// GetResponseFn, Session::Impl supplies this closed over the concrete Stream, which is the
+      /// only thing that knows how to mark a data-provider callback's last chunk.
+      using WriteEofFn =
+         std::function<boost::capy::io_task<std::size_t>(std::span<boost::capy::const_buffer const>)>;
+
+      ClientRequest(Writer writer, WriteEofFn write_eof, GetResponseFn get_response)
+         : writer_(std::move(writer))
+         , write_eof_(std::move(write_eof))
+         , get_response_(std::move(get_response))
       {
       }
 
@@ -149,16 +165,25 @@ public:
       template <boost::capy::ConstBufferSequence CB>
       boost::capy::io_task<std::size_t> write(CB buffers)
       {
-         co_return co_await writer_.write(buffers);
+         co_return co_await boost::capy::write(writer_, buffers);
       }
 
       template <boost::capy::ConstBufferSequence CB>
       boost::capy::io_task<std::size_t> write_eof(CB buffers)
       {
-         co_return co_await writer_.write_eof(buffers);
+         // Must be a coroutine, not a plain forwarding function: ba's lifetime needs to span the
+         // co_await below, since capy's task<> is lazy -- write_eof_'s body doesn't run (and
+         // doesn't copy out of ba) until driven by this co_await.
+         boost::capy::detail::const_buffer_array<boost::capy::detail::max_iovec_> ba(buffers);
+         co_return co_await write_eof_(ba.to_span());
       }
 
-      boost::capy::io_task<> write_eof() { co_return co_await writer_.write_eof(); }
+      boost::capy::io_task<> write_eof()
+      {
+         auto [ec, n] = co_await write_eof_({});
+         (void)n;
+         co_return boost::capy::io_result<>{ec};
+      }
 
       /// Waits for the response to arrive. Safe to call more than once -- returns immediately
       /// once the response has already arrived. Safe to await concurrently with writing the
@@ -169,6 +194,7 @@ public:
 
    private:
       Writer writer_;
+      WriteEofFn write_eof_;
       GetResponseFn get_response_;
    };
 
@@ -188,8 +214,16 @@ public:
       using SubmitFn =
          std::function<boost::capy::io_task<>(unsigned int status, const Headers& headers)>;
 
-      Response(Writer writer, SubmitFn submit)
-         : writer_(std::move(writer)), submit_(std::move(submit))
+      /// Writes (or, with an empty buffer sequence, just signals) end-of-body and marks the
+      /// HTTP/2 stream half-closed. capy's WriteStream concept has no such notion -- there's no
+      /// free algorithm to fall back on the way read()/write() do -- so, like SubmitFn,
+      /// Session::Impl supplies this closed over the concrete Stream, which is the only thing
+      /// that knows how to mark a data-provider callback's last chunk.
+      using WriteEofFn =
+         std::function<boost::capy::io_task<std::size_t>(std::span<boost::capy::const_buffer const>)>;
+
+      Response(Writer writer, SubmitFn submit, WriteEofFn write_eof)
+         : writer_(std::move(writer)), submit_(std::move(submit)), write_eof_(std::move(write_eof))
       {
          logd("\x1b[1;35mServer::Response: ctor\x1b[0m");
       }
@@ -222,20 +256,30 @@ public:
       template <boost::capy::ConstBufferSequence CB>
       boost::capy::io_task<std::size_t> write(CB buffers)
       {
-         co_return co_await writer_.write(buffers);
+         co_return co_await boost::capy::write(writer_, buffers);
       }
 
       template <boost::capy::ConstBufferSequence CB>
       boost::capy::io_task<std::size_t> write_eof(CB buffers)
       {
-         co_return co_await writer_.write_eof(buffers);
+         // Must be a coroutine, not a plain forwarding function: ba's lifetime needs to span the
+         // co_await below, since capy's task<> is lazy -- write_eof_'s body doesn't run (and
+         // doesn't copy out of ba) until driven by this co_await.
+         boost::capy::detail::const_buffer_array<boost::capy::detail::max_iovec_> ba(buffers);
+         co_return co_await write_eof_(ba.to_span());
       }
 
-      boost::capy::io_task<> write_eof() { co_return co_await writer_.write_eof(); }
+      boost::capy::io_task<> write_eof()
+      {
+         auto [ec, n] = co_await write_eof_({});
+         (void)n;
+         co_return boost::capy::io_result<>{ec};
+      }
 
    private:
       Writer writer_;
       SubmitFn submit_;
+      WriteEofFn write_eof_;
    };
 
    Session() = default;
