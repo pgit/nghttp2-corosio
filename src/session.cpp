@@ -487,7 +487,7 @@ void Session::Impl::close_stream(std::int32_t id)
 
 void Session::Impl::dispatch_request(std::shared_ptr<Stream> stream)
 {
-   logi("[{}] on_request: {}", log_prefix(stream->id()), stream->path());
+   logd("[{}] on_request: {}", log_prefix(stream->id()), stream->path());
 
    // Tracked via the same TaskGroup as the session itself (see Server::Impl::~Impl()), so a
    // request handler still mid-flight when the owning Server is destroyed gets cancelled and
@@ -529,7 +529,7 @@ boost::capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> st
                                                       unsigned int status,
                                                       const Session::Headers& headers)
 {
-   logi("[{}] submit_response: {}", log_prefix(stream->id()), status);
+   logd("[{}] submit_response: {}", log_prefix(stream->id()), status);
 
    auto status_str = std::to_string(status);
    std::vector<nghttp2_nv> nva;

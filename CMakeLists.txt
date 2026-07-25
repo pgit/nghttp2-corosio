@@ -36,6 +36,7 @@ if (ENABLE_VALGRIND)
     add_compile_options(-g -O0)
 endif()
 
+# Note: when using GIT_TAG with a commit hash, GIT_SHALLOW must be set to FALSE.
 include(FetchContent)
 FetchContent_Declare(capy
     GIT_REPOSITORY https://github.com/cppalliance/capy.git
