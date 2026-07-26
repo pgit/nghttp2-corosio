@@ -132,7 +132,7 @@ protected:
    void run(std::function<capy::task<>(Session)> test_fn)
    {
       capy::run_async(server_->get_executor(), [this] { server_->stop(); },
-                             [this](std::exception_ptr ep)
+                      [this](std::exception_ptr ep)
       {
          error_ = ep;
          server_->stop();
@@ -251,8 +251,8 @@ TEST_F(ClientAsync, IgnoreRequest)
       auto [ec, request] = co_await session.submit_request("/");
       EXPECT_FALSE(ec);
 
-      auto [wec, sent, received] = co_await capy::when_all(
-         nghttp2_corosio_test::send(request, 0), nghttp2_corosio_test::count(request));
+      auto [wec, sent, received] = co_await capy::when_all(nghttp2_corosio_test::send(request, 0),
+                                                           nghttp2_corosio_test::count(request));
       EXPECT_EQ(received, 0u);
    });
 }
@@ -293,8 +293,8 @@ TEST_F(ClientAsync, PostRange)
       constexpr std::size_t bytes = 1 * 1024 * 1024;
       auto [wec, sent, received] =
          co_await capy::when_all(nghttp2_corosio_test::sendAndForceEOF(
-                                           request, rv::iota(std::uint8_t{0}) | rv::take(bytes)),
-                                        nghttp2_corosio_test::count(request));
+                                    request, rv::iota(std::uint8_t{0}) | rv::take(bytes)),
+                                 nghttp2_corosio_test::count(request));
       EXPECT_FALSE(wec);
       EXPECT_EQ(received, bytes);
    });
@@ -308,14 +308,12 @@ TEST_F(ClientAsync, MultipleRequests_ResponsesInOrder)
    {
       auto [ec1, request1] = co_await session.submit_request("/echo");
       EXPECT_FALSE(ec1);
-      auto [wec1, wn1] =
-         co_await request1.write_eof(capy::make_buffer("Hello, Server #1!"sv));
+      auto [wec1, wn1] = co_await request1.write_eof(capy::make_buffer("Hello, Server #1!"sv));
       EXPECT_FALSE(wec1);
 
       auto [ec2, request2] = co_await session.submit_request("/echo");
       EXPECT_FALSE(ec2);
-      auto [wec2, wn2] =
-         co_await request2.write_eof(capy::make_buffer("Hello, Server #2! XYZ"sv));
+      auto [wec2, wn2] = co_await request2.write_eof(capy::make_buffer("Hello, Server #2! XYZ"sv));
       EXPECT_FALSE(wec2);
 
       auto [rec1, body1] = co_await nghttp2_corosio_test::read(request1);
@@ -566,7 +564,7 @@ TEST_F(ClientAsync, PartialSuccess_ResponseRead)
       EXPECT_FALSE(gec);
 
       std::array<char, 1024> buf;
-      auto [rec, n] = co_await response.read(capy::make_buffer(buf));
+      auto [rec, n] = co_await capy::read(response, capy::make_buffer(buf));
       EXPECT_EQ(rec, capy::cond::eof);
       EXPECT_EQ(n, payload.size());
    });
@@ -580,13 +578,11 @@ TEST_F(ClientAsync, PartialSuccess_ResponseRead)
 TEST_F(ClientAsync, Timeout_RequestReadSome)
 {
    std::error_code timeout_ec;
-   custom = [&timeout_ec](Session::Request request,
-                          Session::Response response) -> capy::task<>
+   custom = [&timeout_ec](Session::Request request, Session::Response response) -> capy::task<>
    {
       std::array<std::uint8_t, 1024> buf;
       // Client never sends body data, so the read_some suspends until the 50ms deadline fires.
-      auto [ec, n] =
-         co_await corosio::timeout(request.read_some(capy::make_buffer(buf)), 50ms);
+      auto [ec, n] = co_await corosio::timeout(request.read_some(capy::make_buffer(buf)), 50ms);
       timeout_ec = ec;
       // Respond so the client-side read(response) can complete and stop the server.
       [[maybe_unused]] auto s = co_await response.submit();
@@ -631,8 +627,7 @@ TEST_F(ClientAsync, Timeout_ResponseReadSome)
 
       std::array<char, 1024> buf;
       // Server delays 500ms before sending body data; our 50ms deadline fires first.
-      auto [rec, n] =
-         co_await corosio::timeout(response.read_some(capy::make_buffer(buf)), 50ms);
+      auto [rec, n] = co_await corosio::timeout(response.read_some(capy::make_buffer(buf)), 50ms);
       EXPECT_EQ(rec, capy::cond::timeout);
       EXPECT_NE(rec, capy::cond::canceled);
       EXPECT_EQ(n, 0u);
@@ -664,7 +659,7 @@ TEST_F(ClientAsync, Timeout_UnlimitedEchoRoundTrip)
       static constexpr auto deadline = 300ms;
       auto [tec, s1, s2] = co_await corosio::timeout(
          capy::when_all(nghttp2_corosio_test::send(request, rv::iota(std::uint8_t{0})),
-                               nghttp2_corosio_test::count_into(request, received)),
+                        nghttp2_corosio_test::count_into(request, received)),
          deadline);
       EXPECT_EQ(tec, capy::cond::timeout);
       EXPECT_NE(tec, capy::cond::canceled);

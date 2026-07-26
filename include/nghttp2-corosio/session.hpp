@@ -112,12 +112,6 @@ public:
          co_return co_await reader_.read_some(buffers);
       }
 
-      template <boost::capy::MutableBufferSequence MB>
-      boost::capy::io_task<std::size_t> read(MB buffers)
-      {
-         return boost::capy::read(reader_, buffers);
-      }
-
    private:
       unsigned int status_;
       Reader reader_;

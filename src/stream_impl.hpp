@@ -201,12 +201,6 @@ public:
       }
    }
 
-   template <boost::capy::MutableBufferSequence MB>
-   boost::capy::io_task<std::size_t> read(MB buffers)
-   {
-      co_return co_await boost::capy::read(*this, buffers);
-   }
-
    // ----------------------------------------------------------------------------------------------
    // Write side, pulled by nghttp2's data provider read callback (see producer_callback()).
    // Producers push through StreamWriter's write_some()/write()/write_eof().
