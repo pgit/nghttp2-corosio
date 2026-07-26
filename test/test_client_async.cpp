@@ -29,7 +29,6 @@
 #include <optional>
 #include <random>
 #include <ranges>
-#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -160,10 +159,10 @@ TEST_F(ClientAsync, PostData_ReceivesEcho)
       EXPECT_FALSE(ec);
 
       constexpr std::size_t bytes = 1024 * 1024;
-      static constexpr std::array<std::uint8_t, bytes> data{};
-      auto [wec, sent, received] = co_await capy::when_all(
-         nghttp2_corosio_test::sendAndForceEOF(request, std::span<const std::uint8_t>(data)),
-         nghttp2_corosio_test::count(request));
+      auto [wec, sent, received] =
+         co_await capy::when_all(nghttp2_corosio_test::sendAndForceEOF(
+                                    request, rv::iota(std::uint8_t{0}) | rv::take(bytes)),
+                                 nghttp2_corosio_test::count(request));
       EXPECT_FALSE(wec);
       EXPECT_EQ(received, bytes);
    });
@@ -215,10 +214,10 @@ TEST_F(ClientAsync, ContentLength_PresentOnRequest_EchoedOnResponse)
       auto [ec, request] = co_await session.submit_request("/echo", bytes);
       EXPECT_FALSE(ec);
 
-      static constexpr std::array<std::uint8_t, bytes> data{};
-      auto [wec, sent, received] = co_await capy::when_all(
-         nghttp2_corosio_test::sendAndForceEOF(request, std::span<const std::uint8_t>(data)),
-         get_response_and_count(request, seen_on_client));
+      auto [wec, sent, received] =
+         co_await capy::when_all(nghttp2_corosio_test::sendAndForceEOF(
+                                    request, rv::iota(std::uint8_t{0}) | rv::take(bytes)),
+                                 get_response_and_count(request, seen_on_client));
       EXPECT_FALSE(wec);
       EXPECT_EQ(received, bytes);
    });
@@ -245,10 +244,10 @@ TEST_F(ClientAsync, ContentLength_AbsentOnRequest_AbsentOnResponse)
       EXPECT_FALSE(ec);
 
       constexpr std::size_t bytes = 1024;
-      static constexpr std::array<std::uint8_t, bytes> data{};
-      auto [wec, sent, received] = co_await capy::when_all(
-         nghttp2_corosio_test::sendAndForceEOF(request, std::span<const std::uint8_t>(data)),
-         get_response_and_count(request, seen_on_client));
+      auto [wec, sent, received] =
+         co_await capy::when_all(nghttp2_corosio_test::sendAndForceEOF(
+                                    request, rv::iota(std::uint8_t{0}) | rv::take(bytes)),
+                                 get_response_and_count(request, seen_on_client));
       EXPECT_FALSE(wec);
       EXPECT_EQ(received, bytes);
    });
