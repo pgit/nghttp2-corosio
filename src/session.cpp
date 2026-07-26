@@ -100,9 +100,10 @@ nghttp2_ssize data_source_read_callback(nghttp2_session*, std::int32_t, std::uin
 // nghttp2 callbacks
 //
 // These wire nghttp2's protocol-level events into the per-stream Stream objects (src/stream.cpp),
-// which bridge them to the coroutine-native StreamReader/StreamWriter. Only the :path
-// pseudo-header is captured (Stream::path(), surfaced via Session::Request::path()) -- there's no
-// general headers API yet.
+// which bridge them to the coroutine-native StreamReader/StreamWriter. :path and :status are
+// captured into their own dedicated fields (Stream::path()/status(), surfaced via
+// Session::Request::path()/ClientResponse::status()); every other, non-pseudo header is captured
+// into Stream::headers(), surfaced via Session::Request::headers()/ClientResponse::headers().
 // -------------------------------------------------------------------------------------------------
 
 int on_begin_headers_callback(nghttp2_session*, const nghttp2_frame* frame, void* user_data)
@@ -128,32 +129,42 @@ int on_header_callback(nghttp2_session*, const nghttp2_frame* frame, const uint8
    logd("[{}]   \x1b[1;34m{}\x1b[0m: {}", session->log_prefix(frame->hd.stream_id), name_sv,
         value_sv);
 
+   // Pseudo-headers are surfaced via their own dedicated accessors, not through headers() below --
+   // :path/:status get one each; the rest (:method, :scheme, :authority on a request) aren't
+   // captured at all yet, since nothing reads them.
    if (name_sv == ":path")
    {
       if (auto stream = session->find_stream(frame->hd.stream_id))
          stream->set_path(std::string(value_sv));
+      return 0;
    }
-   else if (name_sv == ":status")
+   if (name_sv == ":status")
    {
       unsigned int status = 0;
       std::from_chars(value_sv.data(), value_sv.data() + value_sv.size(), status);
       if (auto stream = session->find_stream(frame->hd.stream_id))
          stream->set_status(status);
+      return 0;
    }
-   else if (name_sv == "content-length")
+   if (name_sv.starts_with(':'))
+      return 0;
+
+   if (name_sv == "content-length")
    {
       std::size_t content_length = 0;
       auto [ptr, ec] =
          std::from_chars(value_sv.data(), value_sv.data() + value_sv.size(), content_length);
-      if (ec == std::errc{} && ptr == value_sv.data() + value_sv.size())
-      {
-         if (auto stream = session->find_stream(frame->hd.stream_id))
-            stream->set_content_length(content_length);
-      }
-      else
+      if (ec != std::errc{} || ptr != value_sv.data() + value_sv.size())
          logw("[{}] on_header_callback: ignoring malformed content-length: {}",
               session->log_prefix(frame->hd.stream_id), value_sv);
+      else if (auto stream = session->find_stream(frame->hd.stream_id))
+         stream->set_content_length(content_length);
    }
+
+   // Every non-pseudo header -- including content-length, in addition to the parsed accessor
+   // above -- is also captured into the raw, unfiltered headers() list.
+   if (auto stream = session->find_stream(frame->hd.stream_id))
+      stream->add_header(std::string(name_sv), std::string(value_sv));
 
    return 0;
 }
@@ -280,9 +291,10 @@ Session::~Session() = default;
 Session::executor_type Session::get_executor() const noexcept { return impl_->get_executor(); }
 
 capy::io_task<Session::ClientRequest>
-Session::submit_request(std::string_view path, std::optional<std::size_t> content_length)
+Session::submit_request(std::string_view path, std::optional<std::size_t> content_length,
+                        Headers headers)
 {
-   return impl_->submit_request(path, content_length);
+   return impl_->submit_request(path, content_length, std::move(headers));
 }
 
 // =================================================================================================
@@ -519,7 +531,7 @@ capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream)
 {
    auto self = shared_from_this(); // keep the session alive for the duration of the coroutine
 
-   Session::Request request(stream->path(), stream->content_length(),
+   Session::Request request(stream->path(), stream->content_length(), stream->headers(),
                             Session::Reader(StreamReader(stream)));
    Session::Response response{Session::Writer(StreamWriter(stream)),
                               [self, stream](unsigned int status, const Session::Headers& headers)
@@ -573,7 +585,7 @@ capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> stream,
 // -------------------------------------------------------------------------------------------------
 
 capy::io_task<Session::ClientRequest> Session::Impl::submit_request(
-   std::string_view path, std::optional<std::size_t> content_length)
+   std::string_view path, std::optional<std::size_t> content_length, Session::Headers headers)
 {
    if (role_ != Role::client)
       co_return {std::make_error_code(std::errc::operation_not_permitted),
@@ -603,6 +615,9 @@ capy::io_task<Session::ClientRequest> Session::Impl::submit_request(
       nva.push_back(make_nv("content-length", content_length_str));
    }
 
+   for (const auto& [name, value] : headers)
+      nva.push_back(make_nv(name, value));
+
    for (const auto& nv : nva)
       mlogd("  {}", nv);
 
@@ -629,7 +644,7 @@ capy::io_task<Session::ClientRequest> Session::Impl::submit_request(
                                      [stream]() -> capy::io_task<Session::ClientResponse>
    {
       auto [ec, status] = co_await stream->status();
-      co_return {ec, Session::ClientResponse(status, stream->content_length(),
+      co_return {ec, Session::ClientResponse(status, stream->content_length(), stream->headers(),
                                              Session::Reader(StreamReader(stream)))};
    })};
 }

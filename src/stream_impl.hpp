@@ -78,6 +78,16 @@ public:
    void set_content_length(std::size_t n) noexcept { content_length_ = n; }
    std::optional<std::size_t> content_length() const noexcept { return content_length_; }
 
+   /// Appends a header captured by on_header_callback() -- every header on the frame except the
+   /// pseudo-headers already surfaced via their own dedicated accessors (path()/status()). Order
+   /// preserving and duplicates included, since HTTP permits repeated header names (e.g.
+   /// Set-Cookie). Surfaced via Session::Request::headers()/ClientResponse::headers().
+   void add_header(std::string name, std::string value)
+   {
+      headers_.emplace_back(std::move(name), std::move(value));
+   }
+   const Session::Headers& headers() const noexcept { return headers_; }
+
    /// Set by on_header_callback() as the :status pseudo-header arrives (client sessions only,
    /// on the response HEADERS frame). Wakes anything suspended in status().
    void set_status(unsigned int status) noexcept
@@ -314,6 +324,7 @@ private:
    bool closed_ = false;
    std::string path_;
    std::optional<std::size_t> content_length_;
+   Session::Headers headers_;
    std::string log_prefix_;
 
    // response status (client sessions only)

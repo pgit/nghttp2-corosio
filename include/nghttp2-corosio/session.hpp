@@ -52,8 +52,10 @@ public:
    class Request
    {
    public:
-      Request(std::string path, std::optional<std::size_t> content_length, Reader reader)
-         : path_(std::move(path)), content_length_(content_length), reader_(std::move(reader))
+      Request(std::string path, std::optional<std::size_t> content_length, Headers headers,
+              Reader reader)
+         : path_(std::move(path)), content_length_(content_length), headers_(std::move(headers)),
+           reader_(std::move(reader))
       {
          logd("\x1b[1;35mServer::Request: ctor\x1b[0m");
       }
@@ -82,6 +84,12 @@ public:
       /// has_content_length()/content_length() for the read-side counterpart this mirrors.
       std::optional<std::size_t> content_length() const noexcept { return content_length_; }
 
+      /// Every header the peer sent on the request, other than the pseudo-headers already
+      /// surfaced via their own accessors (path()). Includes content-length, if present, in
+      /// addition to content_length() above -- this is the raw, unfiltered list. Order-preserving
+      /// and may contain duplicate names, matching what arrived on the wire.
+      const Headers& headers() const noexcept { return headers_; }
+
       template <boost::capy::MutableBufferSequence MB>
       boost::capy::io_task<std::size_t> read_some(MB buffers)
       {
@@ -97,6 +105,7 @@ public:
    private:
       std::string path_;
       std::optional<std::size_t> content_length_;
+      Headers headers_;
       Reader reader_;
    };
 
@@ -107,8 +116,10 @@ public:
    class ClientResponse
    {
    public:
-      ClientResponse(unsigned int status, std::optional<std::size_t> content_length, Reader reader)
-         : status_(status), content_length_(content_length), reader_(std::move(reader))
+      ClientResponse(unsigned int status, std::optional<std::size_t> content_length,
+                     Headers headers, Reader reader)
+         : status_(status), content_length_(content_length), headers_(std::move(headers)),
+           reader_(std::move(reader))
       {
       }
 
@@ -119,6 +130,10 @@ public:
       /// Request::content_length()'s doc comment.
       std::optional<std::size_t> content_length() const noexcept { return content_length_; }
 
+      /// Every header the peer sent on the response, other than the `:status` pseudo-header
+      /// already surfaced via status(). See Request::headers()'s doc comment.
+      const Headers& headers() const noexcept { return headers_; }
+
       template <boost::capy::MutableBufferSequence MB>
       boost::capy::io_task<std::size_t> read_some(MB buffers)
       {
@@ -128,6 +143,7 @@ public:
    private:
       unsigned int status_;
       std::optional<std::size_t> content_length_;
+      Headers headers_;
       Reader reader_;
    };
 
@@ -318,13 +334,16 @@ public:
    /// Submits a request on a new stream (client sessions only) and returns a ClientRequest: a
    /// writable request body plus get_response(), which resolves once the response's `:status`
    /// pseudo-header has arrived. Pseudo-headers beyond :method/:path are currently fixed (POST,
-   /// http, an authority derived from the peer endpoint) -- a real headers API will come later.
+   /// http, an authority derived from the peer endpoint).
    ///
    /// Unlike Response::content_length() on the server side, `content_length` here isn't a
    /// separate setter called before some later submit step -- the request HEADERS frame is sent
-   /// by the time this returns, so it has to be supplied up front instead.
+   /// by the time this returns, so it has to be supplied up front instead. `headers` is likewise
+   /// sent as part of that same HEADERS frame, mirroring Response::submit()'s `headers` parameter
+   /// on the server side.
    boost::capy::io_task<ClientRequest>
-   submit_request(std::string_view path, std::optional<std::size_t> content_length = std::nullopt);
+   submit_request(std::string_view path, std::optional<std::size_t> content_length = std::nullopt,
+                  Headers headers = {});
 
 private:
    std::shared_ptr<Impl> impl_;

@@ -2,8 +2,9 @@
 // Ported from a subset of anyhttp's ClientAsync test suite
 // (https://github.com/pgit/anyhttp/blob/master/test/test_server.cpp), adapted to
 // nghttp2-corosio's capy/corosio-based API. Tests relying on features this library doesn't have
-// yet -- arbitrary request/response headers, a URL type with query params, and asio-style
-// per-operation cancellation (cancel_after/bind_cancellation_slot) -- are not ported.
+// yet -- a URL type with query params, and asio-style per-operation cancellation
+// (cancel_after/bind_cancellation_slot) -- are not ported. Arbitrary request/response headers,
+// once also on that list, are covered directly below instead (see the Headers_* tests).
 //
 #include "request_handlers.hpp"
 #include "utils.hpp"
@@ -413,6 +414,161 @@ TEST_F(ClientAsync, ContentLengthMismatch_ResponseLongerThanDeclared)
       EXPECT_EQ(rec, capy::cond::stream_truncated);
       EXPECT_EQ(received, 0u);
    });
+}
+
+// -------------------------------------------------------------------------------------------------
+//
+// headers(): the general, non-pseudo-header list captured on both sides --
+// Session::submit_request()'s new `headers` parameter on the write side,
+// Request::headers()/ClientResponse::headers() on the read side. Headers sent in lowercase only
+// below: nghttp2 rejects/drops anything else as invalid HTTP/2 messaging syntax before
+// on_header_callback() ever sees it (see on_invalid_header_callback() in session.cpp), so
+// case-preservation isn't something these tests can observe either way.
+//
+// -------------------------------------------------------------------------------------------------
+
+TEST_F(ClientAsync, Headers_SentByClient_SeenOnServer)
+{
+   Session::Headers seen_on_server;
+   custom = [&](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      seen_on_server = request.headers();
+      co_await nghttp2_corosio_test::not_found(std::move(response));
+   };
+
+   run([](Session session) -> capy::task<>
+   {
+      Session::Headers headers{{"x-test-header", "hello"}, {"x-another", "world"}};
+      auto [ec, request] = co_await session.submit_request("/", std::nullopt, headers);
+      EXPECT_FALSE(ec);
+
+      auto [wec] = co_await request.write_eof();
+      EXPECT_FALSE(wec);
+
+      auto [gec, response] = co_await request.get_response();
+      EXPECT_FALSE(gec);
+      [[maybe_unused]] auto drained = co_await nghttp2_corosio_test::count(response);
+   });
+
+   ASSERT_EQ(seen_on_server.size(), 2u);
+   EXPECT_EQ(seen_on_server[0], (std::pair{std::string("x-test-header"), std::string("hello")}));
+   EXPECT_EQ(seen_on_server[1], (std::pair{std::string("x-another"), std::string("world")}));
+}
+
+TEST_F(ClientAsync, Headers_SentByServer_SeenOnClient)
+{
+   custom = [](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      std::ignore = request;
+      Session::Headers headers{{"x-server", "value1"}, {"x-other", "value2"}};
+      [[maybe_unused]] auto s = co_await response.submit(200, headers);
+      [[maybe_unused]] auto r = co_await response.write_eof();
+   };
+
+   Session::Headers seen_on_client;
+   run([&](Session session) -> capy::task<>
+   {
+      auto [ec, request] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      auto [wec] = co_await request.write_eof();
+      EXPECT_FALSE(wec);
+
+      auto [gec, response] = co_await request.get_response();
+      EXPECT_FALSE(gec);
+      seen_on_client = response.headers();
+      [[maybe_unused]] auto drained = co_await nghttp2_corosio_test::count(response);
+   });
+
+   ASSERT_EQ(seen_on_client.size(), 2u);
+   EXPECT_EQ(seen_on_client[0], (std::pair{std::string("x-server"), std::string("value1")}));
+   EXPECT_EQ(seen_on_client[1], (std::pair{std::string("x-other"), std::string("value2")}));
+}
+
+TEST_F(ClientAsync, Headers_DuplicateNamesPreserved)
+{
+   // Headers is a plain ordered list, not a map -- HTTP permits repeating a header name (e.g.
+   // Set-Cookie), and nothing here should collapse or reorder that.
+   Session::Headers seen_on_server;
+   custom = [&](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      seen_on_server = request.headers();
+      co_await nghttp2_corosio_test::not_found(std::move(response));
+   };
+
+   run([](Session session) -> capy::task<>
+   {
+      Session::Headers headers{{"x-multi", "one"}, {"x-multi", "two"}};
+      auto [ec, request] = co_await session.submit_request("/", std::nullopt, headers);
+      EXPECT_FALSE(ec);
+
+      auto [wec] = co_await request.write_eof();
+      EXPECT_FALSE(wec);
+
+      auto [gec, response] = co_await request.get_response();
+      EXPECT_FALSE(gec);
+      [[maybe_unused]] auto drained = co_await nghttp2_corosio_test::count(response);
+   });
+
+   ASSERT_EQ(seen_on_server.size(), 2u);
+   EXPECT_EQ(seen_on_server[0], (std::pair{std::string("x-multi"), std::string("one")}));
+   EXPECT_EQ(seen_on_server[1], (std::pair{std::string("x-multi"), std::string("two")}));
+}
+
+TEST_F(ClientAsync, Headers_AbsentOnRequest_EmptyOnServer)
+{
+   // Seeded non-empty so the test can tell whether it was actually overwritten with an empty list,
+   // as opposed to dispatch() simply never running.
+   Session::Headers seen_on_server{{"sentinel", "x"}};
+   custom = [&](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      seen_on_server = request.headers();
+      co_await nghttp2_corosio_test::not_found(std::move(response));
+   };
+
+   run([](Session session) -> capy::task<>
+   {
+      auto [ec, request] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+
+      auto [wec] = co_await request.write_eof();
+      EXPECT_FALSE(wec);
+
+      auto [gec, response] = co_await request.get_response();
+      EXPECT_FALSE(gec);
+      [[maybe_unused]] auto drained = co_await nghttp2_corosio_test::count(response);
+   });
+
+   EXPECT_TRUE(seen_on_server.empty());
+}
+
+TEST_F(ClientAsync, Headers_ContentLengthAlsoAppearsInHeadersList)
+{
+   // content_length() is a parsed convenience accessor, not an alternative to headers() -- the raw
+   // "content-length" entry should still show up in the general list too.
+   constexpr std::size_t bytes = 128;
+   Session::Headers seen_on_server;
+   custom = [&](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      seen_on_server = request.headers();
+      co_await nghttp2_corosio_test::eat_request(std::move(request), std::move(response));
+   };
+
+   run([bytes](Session session) -> capy::task<>
+   {
+      auto [ec, request] = co_await session.submit_request("/eat_request", bytes);
+      EXPECT_FALSE(ec);
+
+      std::vector<std::uint8_t> body(bytes);
+      auto [wec, written] = co_await request.write_eof(capy::make_buffer(body));
+      EXPECT_FALSE(wec);
+
+      auto [gec, response] = co_await request.get_response();
+      EXPECT_FALSE(gec);
+      [[maybe_unused]] auto drained = co_await nghttp2_corosio_test::count(response);
+   });
+
+   ASSERT_EQ(seen_on_server.size(), 1u);
+   EXPECT_EQ(seen_on_server[0], (std::pair{std::string("content-length"), std::to_string(bytes)}));
 }
 
 // -------------------------------------------------------------------------------------------------

@@ -81,7 +81,8 @@ public:
 
    /// Submits a request on a new stream (client sessions only). See Session::submit_request().
    boost::capy::io_task<Session::ClientRequest>
-   submit_request(std::string_view path, std::optional<std::size_t> content_length = std::nullopt);
+   submit_request(std::string_view path, std::optional<std::size_t> content_length = std::nullopt,
+                  Session::Headers headers = {});
 
    std::shared_ptr<Stream> create_stream(std::int32_t id);
    std::shared_ptr<Stream> find_stream(std::int32_t id) const;
