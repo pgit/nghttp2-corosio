@@ -284,6 +284,140 @@ TEST_F(ClientAsync, ContentLength_SetOnResponse_SeenByClient)
    });
 }
 
+// -------------------------------------------------------------------------------------------------
+//
+// Mismatches between a declared content-length and the body actually sent -- ported from anyhttp's
+// CancellationContentLength/SendMoreThanContentLength (test_server.cpp), simplified to a direct
+// short/long write rather than anyhttp's cancel-mid-upload framing (this library doesn't have
+// per-operation cancellation yet, see this file's header comment).
+//
+// nghttp2 itself is what catches these, on the *receiving* side of whichever body is short or
+// long, regardless of which peer sent it: it RST_STREAMs the stream with PROTOCOL_ERROR the moment
+// the accumulated body length can no longer match the advertised content-length -- either when
+// END_STREAM arrives short, or as soon as a single DATA frame would overshoot it (see the debug
+// logs from a manual run of these two cases: the "long" case never even reaches
+// on_data_chunk_recv_callback). Nothing in this library detects the mismatch itself; what it adds
+// is surfacing the resulting abrupt close as capy::cond::stream_truncated rather than plain eof
+// (see Stream::eof_error() in stream_impl.hpp), so it actually reads as distinct from a clean body
+// end instead of a same-looking, silently-shorter read.
+//
+// -------------------------------------------------------------------------------------------------
+
+TEST_F(ClientAsync, ContentLengthMismatch_RequestShorterThanDeclared)
+{
+   std::optional<std::size_t> seen_on_client;
+   run([&](Session session) -> capy::task<>
+   {
+      constexpr std::size_t declared = 1024;
+      constexpr std::size_t actual = 512;
+      auto [ec, request] = co_await session.submit_request("/echo", declared);
+      EXPECT_FALSE(ec);
+
+      // Unlike the "longer" case below, the short-but-not-yet-ended body isn't rejected outright:
+      // /echo's handler (see request_handlers.cpp) submits its response as soon as it has *any*
+      // data, before it can know the request will end up short -- so nghttp2 only detects the
+      // mismatch once the separate, later write_eof() call (see sendAndForceEOF()) delivers
+      // END_STREAM with fewer total bytes than declared. Depending on scheduling, the response
+      // (itself echoing the same now-broken content-length) may already have started flowing back
+      // by then, so this can observe anywhere from 0 up to `actual` bytes before truncation hits --
+      // what's guaranteed is that it always does hit, and never the full, clean `actual` bytes.
+      auto [wec, sent, received] =
+         co_await capy::when_all(nghttp2_corosio_test::sendAndForceEOF(
+                                    request, rv::iota(std::uint8_t{0}) | rv::take(actual)),
+                                 get_response_and_count(request, seen_on_client));
+      EXPECT_EQ(wec, capy::cond::stream_truncated);
+      EXPECT_LE(received, actual);
+   });
+}
+
+TEST_F(ClientAsync, ContentLengthMismatch_RequestLongerThanDeclared)
+{
+   std::optional<std::size_t> seen_on_client;
+   run([&](Session session) -> capy::task<>
+   {
+      constexpr std::size_t declared = 512;
+      constexpr std::size_t actual = 1024;
+      auto [ec, request] = co_await session.submit_request("/echo", declared);
+      EXPECT_FALSE(ec);
+
+      auto [wec, sent, received] =
+         co_await capy::when_all(nghttp2_corosio_test::sendAndForceEOF(
+                                    request, rv::iota(std::uint8_t{0}) | rv::take(actual)),
+                                 get_response_and_count(request, seen_on_client));
+      EXPECT_EQ(wec, capy::cond::stream_truncated);
+      EXPECT_EQ(received, 0u);
+   });
+
+   EXPECT_FALSE(seen_on_client.has_value());
+}
+
+TEST_F(ClientAsync, ContentLengthMismatch_ResponseShorterThanDeclared)
+{
+   constexpr std::size_t declared = 1024;
+   constexpr std::size_t actual = 512;
+   custom = [declared, actual](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      std::ignore = request;
+      response.content_length(declared);
+      [[maybe_unused]] auto s = co_await response.submit();
+      std::vector<std::uint8_t> data(actual);
+      [[maybe_unused]] auto r = co_await response.write_eof(capy::make_buffer(data));
+   };
+
+   run([declared, actual](Session session) -> capy::task<>
+   {
+      auto [ec, request] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      auto [wec] = co_await request.write_eof();
+      EXPECT_FALSE(wec);
+
+      // Headers are already sent by the time nghttp2 notices the mismatch (it can only tell once
+      // the response body ends short of declared) -- so unlike the request-side cases above,
+      // get_response() itself succeeds; the client's own read of the body is what fails.
+      auto [gec, response] = co_await request.get_response();
+      EXPECT_FALSE(gec);
+      EXPECT_EQ(response.content_length(), std::make_optional(declared));
+
+      auto [rec, received] = co_await nghttp2_corosio_test::count(response);
+      EXPECT_EQ(rec, capy::cond::stream_truncated);
+      EXPECT_EQ(received, actual);
+   });
+}
+
+TEST_F(ClientAsync, ContentLengthMismatch_ResponseLongerThanDeclared)
+{
+   constexpr std::size_t declared = 512;
+   constexpr std::size_t actual = 1024;
+   custom = [declared, actual](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      std::ignore = request;
+      response.content_length(declared);
+      [[maybe_unused]] auto s = co_await response.submit();
+      std::vector<std::uint8_t> data(actual);
+      [[maybe_unused]] auto r = co_await response.write_eof(capy::make_buffer(data));
+   };
+
+   run([declared](Session session) -> capy::task<>
+   {
+      auto [ec, request] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      auto [wec] = co_await request.write_eof();
+      EXPECT_FALSE(wec);
+
+      auto [gec, response] = co_await request.get_response();
+      EXPECT_FALSE(gec);
+      EXPECT_EQ(response.content_length(), std::make_optional(declared));
+
+      // Same "rejected before it ever reaches the app" shape as the over-long request cases above:
+      // a single DATA frame carrying the whole (too-long) body never gets delivered at all.
+      auto [rec, received] = co_await nghttp2_corosio_test::count(response);
+      EXPECT_EQ(rec, capy::cond::stream_truncated);
+      EXPECT_EQ(received, 0u);
+   });
+}
+
+// -------------------------------------------------------------------------------------------------
+
 TEST_F(ClientAsync, PostToUnknownPath_Returns404)
 {
    run([](Session session) -> capy::task<>

@@ -87,8 +87,10 @@ public:
    }
 
    /// Waits for the response's :status pseudo-header to arrive, or returns immediately if it
-   /// already has. Also wakes -- with an eof error, since no status is ever coming -- if the
-   /// stream closes first (see on_close()), e.g. a server torn down mid-request.
+   /// already has. Also wakes -- with eof_error(), since no status is ever coming -- if the
+   /// stream closes first (see on_close()), e.g. a server torn down mid-request. In practice this
+   /// is always stream_truncated rather than eof: HTTP/2 delivers headers before any body data, so
+   /// read_eof_ can't be set yet when a response's own status never arrived in the first place.
    boost::capy::io_task<unsigned int> status()
    {
       if (status_ < 0)
@@ -97,7 +99,7 @@ public:
          if (auto [ec] = co_await status_ready_.wait(); ec)
             co_return {ec, 0u};
          if (status_ < 0)
-            co_return {boost::capy::make_error_code(boost::capy::error::eof), 0u};
+            co_return {eof_error(), 0u};
       }
       co_return {{}, static_cast<unsigned int>(status_)};
    }
@@ -159,9 +161,9 @@ public:
 
       if (read_eof_ || closed_)
       {
-         logd("[{}] read_some: finished, 0 bytes pending, eof_received={}", log_prefix_,
-              read_eof_);
-         co_return {boost::capy::make_error_code(boost::capy::error::eof), 0};
+         logd("[{}] read_some: finished, 0 bytes pending, eof_received={}, closed={}", log_prefix_,
+              read_eof_, closed_);
+         co_return {eof_error(), 0};
       }
 
       // Nothing buffered: park here and publish `bp` via read_sink_ so on_data() can copy an
@@ -201,9 +203,9 @@ public:
             co_return {ec, 0};
          if (read_eof_ || closed_)
          {
-            logd("[{}] read_some: finished, 0 bytes pending, eof_received={}", log_prefix_,
-                 read_eof_);
-            co_return {boost::capy::make_error_code(boost::capy::error::eof), 0};
+            logd("[{}] read_some: finished, 0 bytes pending, eof_received={}, closed={}",
+                 log_prefix_, read_eof_, closed_);
+            co_return {eof_error(), 0};
          }
       }
    }
@@ -250,6 +252,19 @@ public:
 
 private:
    void consume(std::size_t n);
+
+   /// The error read_some() reports once nothing more is coming: `error::eof` if the peer sent a
+   /// clean END_STREAM (read_eof_), or `error::stream_truncated` if the stream instead closed
+   /// without one -- e.g. nghttp2 RST_STREAM-ing it after detecting the actual body didn't match
+   /// an advertised content-length (see on_header_callback()'s "content-length" case in
+   /// session.cpp). Checking read_eof_ first matters: a stream that finished cleanly and was
+   /// *then* torn down (the ordinary case -- on_close() always runs after on_read_eof(), see
+   /// Session::Impl::run()) must still report plain eof, not stream_truncated.
+   std::error_code eof_error() const noexcept
+   {
+      return boost::capy::make_error_code(read_eof_ ? boost::capy::error::eof
+                                                    : boost::capy::error::stream_truncated);
+   }
 
    template <boost::capy::ConstBufferSequence CB>
    boost::capy::io_task<std::size_t> write_impl(CB buffers, bool eof)
