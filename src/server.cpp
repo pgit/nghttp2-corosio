@@ -86,7 +86,7 @@ boost::capy::task<> Server::Impl::accept_loop()
       // round trips by tens of milliseconds.
       peer.set_option(boost::corosio::socket_option::no_delay(true));
 
-      logi("[{}] new connection", peer.remote_endpoint());
+      logi("[\x1b[1;31mserver\x1b[0m] [{}] new connection", peer.remote_endpoint());
 
       // TODO: wrap `peer` in a TLS stream (corosio::openssl_stream / wolfssl_stream) here once
       // TLS support is added, before erasing it into `any_stream` below.
