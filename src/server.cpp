@@ -62,6 +62,32 @@ void Server::Impl::start()
    group.spawn(ioc_.get_executor(), accept_loop());
 }
 
+std::size_t Server::Impl::run()
+{
+   if (log_level() > LogLevel::debug)
+      return ioc_.run();
+
+   std::size_t i = 0;
+   using namespace std::chrono;
+   auto t0 = steady_clock::now();
+   for (i = 0; ioc_.run_one(); ++i)
+   {
+      auto t1 = steady_clock::now();
+      auto dt = duration_cast<milliseconds>(t1 - t0);
+      t0 = t1;
+      if (dt < 10ms)
+         std::println(
+            "--- {} ------------------------------------------------------------------------", i);
+      else
+         std::println("\x1b[1;31m--- {} ({}) "
+                      "----------------------------------------------------------------\x1b[0m",
+                      i, dt);
+   }
+   return i;
+}
+
+void Server::Impl::stop() { ioc_.stop(); }
+
 capy::task<> Server::Impl::accept_loop()
 {
    auto ep = acceptor_.local_endpoint();
