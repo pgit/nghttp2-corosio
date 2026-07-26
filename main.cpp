@@ -1,4 +1,5 @@
 #include <boost/capy.hpp>
+#include <boost/capy/buffers/make_buffer.hpp>
 #include <boost/corosio.hpp>
 #include <iostream>
 
@@ -12,11 +13,11 @@ capy::task<> echo_session(corosio::tcp_socket socket)
 
    for (;;)
    {
-      auto [ec, n] = co_await socket.read_some(capy::mutable_buffer(buf, sizeof(buf)));
+      auto [ec, n] = co_await socket.read_some(capy::make_buffer(buf));
       if (ec)
          break;
 
-      auto [wec, wn] = co_await capy::write(socket, capy::const_buffer(buf, n));
+      auto [wec, wn] = co_await capy::write(socket, capy::make_buffer(buf, n));
       if (wec)
          break;
 

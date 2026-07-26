@@ -122,8 +122,7 @@ boost::capy::io_task<> send(Session::ClientRequest& request, Range range)
       for (; n < buffer.size() && it != last; ++it)
          buffer[n++] = static_cast<std::uint8_t>(*it);
 
-      if (auto [ec, written] = co_await request.write(boost::capy::const_buffer(buffer.data(), n));
-          ec)
+      if (auto [ec, written] = co_await request.write(boost::capy::make_buffer(buffer, n)); ec)
          co_return {ec};
    }
    co_return {};
@@ -146,7 +145,7 @@ boost::capy::io_task<> send_into(Session::ClientRequest& request, Range range, s
       for (; n < buffer.size() && it != last; ++it)
          buffer[n++] = static_cast<std::uint8_t>(*it);
 
-      auto [ec, written] = co_await request.write(boost::capy::const_buffer(buffer.data(), n));
+      auto [ec, written] = co_await request.write(boost::capy::make_buffer(buffer, n));
       sent += written;
       if (ec)
          co_return {ec};

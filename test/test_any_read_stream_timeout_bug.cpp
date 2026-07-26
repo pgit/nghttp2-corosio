@@ -11,7 +11,7 @@ namespace capy = boost::capy;
 namespace corosio = boost::corosio;
 using namespace std::chrono_literals;
 
-boost::capy::task<> timeout_read_some()
+capy::task<> timeout_read_some()
 {
    capy::test::read_stream mock;
    mock.provide("hello world");

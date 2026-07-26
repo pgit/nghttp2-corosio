@@ -25,6 +25,8 @@
 #include <utility>
 #include <vector>
 
+namespace capy = boost::capy;
+
 namespace nghttp2_corosio
 {
 
@@ -263,7 +265,7 @@ Session::~Session() = default;
 
 Session::executor_type Session::get_executor() const noexcept { return impl_->get_executor(); }
 
-boost::capy::io_task<Session::ClientRequest> Session::submit_request(std::string_view path)
+capy::io_task<Session::ClientRequest> Session::submit_request(std::string_view path)
 {
    return impl_->submit_request(path);
 }
@@ -279,7 +281,7 @@ Session::Impl::~Impl()
 
 // -------------------------------------------------------------------------------------------------
 
-boost::capy::task<> Session::Impl::run()
+capy::task<> Session::Impl::run()
 {
    auto self = shared_from_this(); // keep the session alive for the duration of the coroutine
 
@@ -316,7 +318,7 @@ boost::capy::task<> Session::Impl::run()
    nghttp2_submit_settings(session_, NGHTTP2_FLAG_NONE, &ent, 1);
 #endif
 
-   std::ignore = co_await boost::capy::when_all(send_loop(), recv_loop());
+   std::ignore = co_await capy::when_all(send_loop(), recv_loop());
 
    // Abort any streams that never closed at the protocol level -- e.g. abandoned by the user
    // without writing/reading anything, or still in flight when the session ended (connection
@@ -343,7 +345,7 @@ boost::capy::task<> Session::Impl::run()
 // until either the buffer is full or no more data is returned. Then, the buffered data is written
 // to the stream. Finally, if still no more data is returned, it waits for a signal to resume.
 //
-boost::capy::io_task<> Session::Impl::send_loop()
+capy::io_task<> Session::Impl::send_loop()
 {
    std::vector<std::uint8_t> pending;
    pending.reserve(1460);
@@ -375,10 +377,10 @@ boost::capy::io_task<> Session::Impl::send_loop()
           bytes_to_write > 0)
       {
          mylogd("send loop: writing {} bytes...", bytes_to_write);
-         std::array<boost::capy::const_buffer, 2> seq{
-            boost::capy::const_buffer(pending.data(), pending.size()),
-            boost::capy::const_buffer(data, static_cast<std::size_t>(nread))};
-         auto [ec, written] = co_await boost::capy::write(stream_, seq);
+         std::array<capy::const_buffer, 2> seq{
+            capy::make_buffer(pending),
+            capy::const_buffer(data, static_cast<std::size_t>(nread))};
+         auto [ec, written] = co_await capy::write(stream_, seq);
          pending.clear();
          if (ec)
          {
@@ -401,18 +403,18 @@ boost::capy::io_task<> Session::Impl::send_loop()
    }
 
    mylogd("send loop: done");
-   co_return boost::capy::io_result<>{};
+   co_return capy::io_result<>{};
 }
 
 // -------------------------------------------------------------------------------------------------
 
-boost::capy::io_task<> Session::Impl::recv_loop()
+capy::io_task<> Session::Impl::recv_loop()
 {
    std::vector<std::uint8_t> buffer(64 * 1024);
 
    while (nghttp2_session_want_read(session_) || nghttp2_session_want_write(session_))
    {
-      auto [ec, n] = co_await stream_.read_some(boost::capy::make_buffer(buffer));
+      auto [ec, n] = co_await stream_.read_some(capy::make_buffer(buffer));
       if (ec)
       {
          mylogd("recv loop: {}, terminating session", ec.message());
@@ -438,7 +440,7 @@ boost::capy::io_task<> Session::Impl::recv_loop()
    start_write(); // wake send_loop() so it can flush the GOAWAY
 
    mlogi("recv loop: done, served {} requests", request_counter_);
-   co_return boost::capy::io_result<>{};
+   co_return capy::io_result<>{};
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -498,7 +500,7 @@ void Session::Impl::dispatch_request(std::shared_ptr<Stream> stream)
 
 // -------------------------------------------------------------------------------------------------
 
-boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream)
+capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream)
 {
    auto self = shared_from_this(); // keep the session alive for the duration of the coroutine
 
@@ -506,7 +508,7 @@ boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream
    Session::Response response{Session::Writer(StreamWriter(stream)),
                               [self, stream](unsigned int status, const Session::Headers& headers)
    { return self->submit_response(stream, status, headers); },
-                              [stream](std::span<boost::capy::const_buffer const> buffers)
+                              [stream](std::span<capy::const_buffer const> buffers)
    { return stream->write_eof(buffers); }};
 
    if (handler_)
@@ -525,7 +527,7 @@ boost::capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream
 
 // -------------------------------------------------------------------------------------------------
 
-boost::capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> stream,
+capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> stream,
                                                       unsigned int status,
                                                       const Session::Headers& headers)
 {
@@ -546,15 +548,15 @@ boost::capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> st
    if (nghttp2_submit_response2(session_, stream->id(), nva.data(), nva.size(), &prd))
    {
       loge("[{}] submit_response: nghttp2_submit_response2 failed", log_prefix(stream->id()));
-      co_return boost::capy::io_result<>{std::make_error_code(std::errc::invalid_argument)};
+      co_return capy::io_result<>{std::make_error_code(std::errc::invalid_argument)};
    }
    start_write();
-   co_return boost::capy::io_result<>{};
+   co_return capy::io_result<>{};
 }
 
 // -------------------------------------------------------------------------------------------------
 
-boost::capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::string_view path)
+capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::string_view path)
 {
    if (role_ != Role::client)
       co_return {std::make_error_code(std::errc::operation_not_permitted),
@@ -594,9 +596,9 @@ boost::capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::
    logi("[{}] submit_request: {}", log_prefix(id), path);
    co_return {std::error_code{},
               Session::ClientRequest(Session::Writer(StreamWriter(stream)),
-                                     [stream](std::span<boost::capy::const_buffer const> buffers)
+                                     [stream](std::span<capy::const_buffer const> buffers)
    { return stream->write_eof(buffers); },
-                                     [stream]() -> boost::capy::io_task<Session::ClientResponse>
+                                     [stream]() -> capy::io_task<Session::ClientResponse>
    {
       auto [ec, status] = co_await stream->status();
       co_return {ec, Session::ClientResponse(status, Session::Reader(StreamReader(stream)))};

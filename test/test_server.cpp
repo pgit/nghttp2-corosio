@@ -19,6 +19,8 @@
 #include <string_view>
 #include <vector>
 
+namespace corosio = boost::corosio;
+
 namespace
 {
 
@@ -42,7 +44,7 @@ namespace
 class RawClient
 {
 public:
-   RawClient(boost::corosio::io_context& ctx, std::uint16_t port) : ctx_(ctx)
+   RawClient(corosio::io_context& ctx, std::uint16_t port) : ctx_(ctx)
    {
       fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
 
@@ -103,7 +105,7 @@ public:
    }
 
 private:
-   boost::corosio::io_context& ctx_;
+   corosio::io_context& ctx_;
    int fd_ = -1;
    bool connected_ = false;
 };
@@ -158,7 +160,7 @@ protected:
    // background either -- see the comment on RawClient for how each test drives it directly,
    // interleaved with raw socket I/O.
    std::uint16_t port() const { return server_->local_endpoint().port(); }
-   boost::corosio::io_context& context() const { return server_->get_executor().context(); }
+   corosio::io_context& context() const { return server_->get_executor().context(); }
 
    std::optional<nghttp2_corosio::Server> server_;
 };

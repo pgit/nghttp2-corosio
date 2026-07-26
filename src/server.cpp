@@ -12,6 +12,9 @@
 #include <boost/corosio/socket_option.hpp>
 #include <boost/corosio/tcp_socket.hpp>
 
+namespace capy = boost::capy;
+namespace corosio = boost::corosio;
+
 namespace nghttp2_corosio
 {
 
@@ -19,8 +22,7 @@ namespace nghttp2_corosio
 
 Server::Impl::Impl(Config config)
    : config_(std::move(config)),
-     acceptor_(ioc_, boost::corosio::endpoint(boost::corosio::ipv6_address(config_.listen_address),
-                                              config_.port))
+     acceptor_(ioc_, corosio::endpoint(corosio::ipv6_address(config_.listen_address), config_.port))
 {
    logi("Server: ctor");
 }
@@ -60,17 +62,17 @@ void Server::Impl::start()
    group.spawn(ioc_.get_executor(), accept_loop());
 }
 
-boost::capy::task<> Server::Impl::accept_loop()
+capy::task<> Server::Impl::accept_loop()
 {
    auto ep = acceptor_.local_endpoint();
    logi("Server: listening on {}", ep);
 
    auto& group = ioc_.use_service<detail::TaskGroup>();
-   auto token = co_await boost::capy::this_coro::stop_token;
+   auto token = co_await capy::this_coro::stop_token;
 
    for (;;)
    {
-      boost::corosio::tcp_socket peer(ioc_);
+      corosio::tcp_socket peer(ioc_);
       auto [ec] = co_await acceptor_.accept(peer);
       if (ec)
       {
@@ -84,13 +86,13 @@ boost::capy::task<> Server::Impl::accept_loop()
       // small DATA chunks); leaving Nagle's algorithm on lets those sit buffered waiting to
       // coalesce, which combined with the peer's delayed ACKs stalls unpipelined request/response
       // round trips by tens of milliseconds.
-      peer.set_option(boost::corosio::socket_option::no_delay(true));
+      peer.set_option(corosio::socket_option::no_delay(true));
 
       logi("[\x1b[1;31mserver\x1b[0m] [{}] new connection", peer.remote_endpoint());
 
       // TODO: wrap `peer` in a TLS stream (corosio::openssl_stream / wolfssl_stream) here once
       // TLS support is added, before erasing it into `any_stream` below.
-      boost::capy::any_stream stream(std::move(peer));
+      capy::any_stream stream(std::move(peer));
 
       auto session = std::make_shared<Session::Impl>(ioc_.get_executor(), std::move(stream),
                                                      Session::Impl::Role::server, config_.handler);
@@ -110,7 +112,7 @@ Server::~Server() = default;
 
 Server::executor_type Server::get_executor() const noexcept { return impl_->get_executor(); }
 
-boost::corosio::endpoint Server::local_endpoint() const { return impl_->local_endpoint(); }
+corosio::endpoint Server::local_endpoint() const { return impl_->local_endpoint(); }
 
 std::size_t Server::run() { return impl_->run(); }
 

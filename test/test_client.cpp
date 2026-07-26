@@ -16,28 +16,30 @@
 #include <string_view>
 #include <utility>
 
+namespace capy = boost::capy;
+namespace corosio = boost::corosio;
+
 namespace
 {
 
 // Same shape as server_main.cpp's echo handler: streams the request body straight back. submit()
 // is deferred to just before the first write -- see the comment on server_main.cpp's echo() for
 // why that matters for throughput.
-boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
+capy::task<> echo(nghttp2_corosio::Session::Request request,
                          nghttp2_corosio::Session::Response response)
 {
    bool submitted = false;
    std::array<std::uint8_t, 64 * 1024> buffer;
    for (;;)
    {
-      auto [rec, n] =
-         co_await request.read_some(boost::capy::mutable_buffer(buffer.data(), buffer.size()));
+      auto [rec, n] = co_await request.read_some(capy::make_buffer(buffer));
       if (rec)
          break;
 
       if (!std::exchange(submitted, true))
          [[maybe_unused]] auto s = co_await response.submit();
 
-      auto [wec, wn] = co_await response.write(boost::capy::const_buffer(buffer.data(), n));
+      auto [wec, wn] = co_await response.write(capy::make_buffer(buffer, n));
       if (wec)
          break;
    }
@@ -51,20 +53,20 @@ boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
 // invoked as a temporary (`[...]() -> task<>{...}()`) dangles as soon as the coroutine suspends
 // past the statement's end -- captures live in the closure object, and the coroutine frame only
 // keeps a pointer back to it. Plain functions have no such temporary to outlive.
-boost::capy::task<> connect_to_server(nghttp2_corosio::Server::executor_type executor,
+capy::task<> connect_to_server(nghttp2_corosio::Server::executor_type executor,
                                       std::uint16_t port, bool& connected)
 {
-   auto ep = boost::corosio::endpoint(boost::corosio::ipv4_address("127.0.0.1"), port);
+   auto ep = corosio::endpoint(corosio::ipv4_address("127.0.0.1"), port);
    nghttp2_corosio::Client client(executor);
    auto [ec, session] = co_await client.connect(ep);
    connected = !ec && session;
 }
 
-boost::capy::task<> echo_request(std::uint16_t port, std::string_view payload, std::string& echoed,
+capy::task<> echo_request(std::uint16_t port, std::string_view payload, std::string& echoed,
                                  bool& ok)
 {
-   auto ex = co_await boost::capy::this_coro::executor;
-   auto ep = boost::corosio::endpoint(boost::corosio::ipv4_address("127.0.0.1"), port);
+   auto ex = co_await capy::this_coro::executor;
+   auto ep = corosio::endpoint(corosio::ipv4_address("127.0.0.1"), port);
    nghttp2_corosio::Client client(ex);
    auto [ec, session] = co_await client.connect(ep);
    if (ec)
@@ -74,7 +76,7 @@ boost::capy::task<> echo_request(std::uint16_t port, std::string_view payload, s
    if (sec)
       co_return;
 
-   auto [wec, wn] = co_await request.write_eof(boost::capy::make_buffer(payload));
+   auto [wec, wn] = co_await request.write_eof(capy::make_buffer(payload));
 
    auto [gec, reader] = co_await request.get_response();
    if (gec)
@@ -84,13 +86,12 @@ boost::capy::task<> echo_request(std::uint16_t port, std::string_view payload, s
    std::array<char, 1024> buffer;
    for (;;)
    {
-      auto [ec, n] =
-         co_await reader.read_some(boost::capy::mutable_buffer(buffer.data(), buffer.size()));
+      auto [ec, n] = co_await reader.read_some(capy::make_buffer(buffer));
       echoed.append(buffer.data(), n);
       if (ec)
       {
          // Reaching end-of-stream is how this loop is meant to end -- not a failure to report.
-         if (ec != boost::capy::cond::eof)
+         if (ec != capy::cond::eof)
             rec = ec;
          break;
       }
@@ -119,7 +120,7 @@ TEST(ClientTest, ConnectsToServer)
    // No thread is spawned: the completion handler stops the server, which is what makes the
    // synchronous run() below (driving the server's own io_context on this thread) return.
    bool connected = false;
-   boost::capy::run_async(server.get_executor(), [&server] { server.stop(); },
+   capy::run_async(server.get_executor(), [&server] { server.stop(); },
                           [&server](std::exception_ptr) { server.stop(); })(
       connect_to_server(server.get_executor(), port, connected));
 
@@ -140,7 +141,7 @@ TEST(ClientTest, EchoesRequestBody)
    std::string echoed;
    bool ok = false;
 
-   boost::capy::run_async(server.get_executor(), [&server] { server.stop(); },
+   capy::run_async(server.get_executor(), [&server] { server.stop(); },
                           [&server](std::exception_ptr) { server.stop(); })(
       echo_request(port, payload, echoed, ok));
 

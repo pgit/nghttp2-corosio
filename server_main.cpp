@@ -2,11 +2,14 @@
 #include <nghttp2-corosio/server.hpp>
 
 #include <boost/capy/buffers.hpp>
+#include <boost/capy/buffers/make_buffer.hpp>
 
 #include <array>
 #include <cstdlib>
 #include <print>
 #include <utility>
+
+namespace capy = boost::capy;
 
 namespace
 {
@@ -22,7 +25,7 @@ namespace
 // Measured ~40% lower h2load throughput (`-n 10000 -m 4 -c 3`, 64KiB request/response bodies) than
 // submitting once the first chunk is already in hand, where nghttp2 can fold the HEADERS and first
 // DATA frame into one send_loop() pass.
-boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
+capy::task<> echo(nghttp2_corosio::Session::Request request,
                          nghttp2_corosio::Session::Response response)
 {
    logd("[{}] echo: streaming request body back", request.path());
@@ -32,15 +35,14 @@ boost::capy::task<> echo(nghttp2_corosio::Session::Request request,
    std::array<std::uint8_t, 64 * 1024> buffer;
    for (;;)
    {
-      auto [rec, n] =
-         co_await request.read_some(boost::capy::mutable_buffer(buffer.data(), buffer.size()));
+      auto [rec, n] = co_await request.read_some(capy::make_buffer(buffer));
       if (rec)
          break;
 
       if (!std::exchange(submitted, true))
          [[maybe_unused]] auto s = co_await response.submit(200, headers);
 
-      auto [wec, wn] = co_await response.write(boost::capy::const_buffer(buffer.data(), n));
+      auto [wec, wn] = co_await response.write(capy::make_buffer(buffer, n));
       if (wec)
          break;
    }
@@ -65,5 +67,6 @@ int main(int argc, char* argv[])
    std::println(
       "Try: curl --http2-prior-knowledge --data-binary @somefile http://localhost:{}/echo",
       server.local_endpoint().port());
+
    server.run();
 }

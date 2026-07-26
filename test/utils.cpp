@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <print> // IWYU pragma: keep
 
+namespace corosio = boost::corosio;
+
 namespace nghttp2_corosio_test
 {
 
@@ -28,7 +30,7 @@ struct LogLevelFromEnv
 
 } // namespace
 
-std::size_t run(boost::corosio::io_context& context)
+std::size_t run(corosio::io_context& context)
 {
 #if defined(NDEBUG)
    return context.run();
