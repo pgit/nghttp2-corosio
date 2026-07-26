@@ -1,4 +1,5 @@
 #include "nghttp2-corosio/session.hpp"
+#include "boost/capy/buffers/make_buffer.hpp"
 #include "nghttp2-corosio/formatter.hpp"
 #include "nghttp2-corosio/logging.hpp"
 #include "session_impl.hpp"
@@ -411,8 +412,7 @@ boost::capy::io_task<> Session::Impl::recv_loop()
 
    while (nghttp2_session_want_read(session_) || nghttp2_session_want_write(session_))
    {
-      auto [ec, n] =
-         co_await stream_.read_some(boost::capy::mutable_buffer(buffer.data(), buffer.size()));
+      auto [ec, n] = co_await stream_.read_some(boost::capy::make_buffer(buffer));
       if (ec)
       {
          mylogd("recv loop: {}, terminating session", ec.message());
