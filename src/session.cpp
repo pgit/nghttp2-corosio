@@ -619,7 +619,7 @@ capy::io_task<Session::ClientRequest> Session::Impl::submit_request(
       nva.push_back(make_nv(name, value));
 
    for (const auto& nv : nva)
-      mlogd("  {}", nv);
+      logd("[{0}]   \x1b[1;34m{1:n}\x1b[0m: {1:v}", log_prefix(), nv);
 
    auto id =
       nghttp2_submit_request2(session_, nullptr, nva.data(), nva.size(), &prd, stream.get());
