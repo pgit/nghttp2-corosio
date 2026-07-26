@@ -3,3 +3,4 @@ build*/
 .claude/
 callgrind.out*
 *:Zone.Identifier
+cmake_test_discovery_*.json

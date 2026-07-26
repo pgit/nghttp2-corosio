@@ -5,11 +5,18 @@ FetchContent_Declare(googletest
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(googletest)
 
+# test_external.cpp is the only translation unit in this project that uses ASIO/Boost.Process.V2
+# (see its top comment for why) -- everything else drives I/O through capy/corosio. Boost itself
+# isn't FetchContent'd like capy/corosio are; it's expected to already be installed system-wide
+# (see the devcontainer image), so this just links against it.
+find_package(boost_process 1.86 CONFIG REQUIRED)
+
 add_executable(nghttp2-corosio-tests
     request_handlers.cpp
     test_any_read_stream_timeout_bug.cpp
     test_client.cpp
     test_client_async.cpp
+    test_external.cpp
     test_server.cpp
     utils.cpp
 )
@@ -18,10 +25,14 @@ target_link_libraries(nghttp2-corosio-tests
     PRIVATE
         nghttp2-corosio
         GTest::gtest_main
+        Boost::process
 )
 
 include(GoogleTest)
-gtest_discover_tests(nghttp2-corosio-tests)
+# WORKING_DIRECTORY matches anyhttp's own test/CMakeLists.txt: External's tests reference test
+# fixtures (test/data/64kminus1) and a payload file (this project's own CMakeLists.txt) by a path
+# relative to the repo root, not wherever ctest happens to invoke the test binary from.
+gtest_discover_tests(nghttp2-corosio-tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # =================================================================================================
 #
@@ -56,6 +67,11 @@ if (VALGRIND_EXECUTABLE)
             --track-origins=yes
             $<TARGET_FILE:nghttp2-corosio-tests>
     )
+    # Same reason as gtest_discover_tests()'s WORKING_DIRECTORY above: without it, External's
+    # fixture-construction-time file_size("CMakeLists.txt") throws before any test body runs
+    # (ctest's default working directory for a plain add_test() is this file's own directory, not
+    # the repo root), failing all of External's tests -- not a memcheck finding, just a wrong CWD.
+    set_tests_properties(ValgrindMemcheck PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 else()
     message(STATUS "valgrind not found -- ValgrindMemcheck test will not be registered")
 endif()
