@@ -169,6 +169,121 @@ TEST_F(ClientAsync, PostData_ReceivesEcho)
    });
 }
 
+// -------------------------------------------------------------------------------------------------
+//
+// content_length(): parsed from an explicit `content-length` header on the reading side
+// (Request::content_length(), ClientResponse::content_length()), and settable on the writing side
+// (Response::content_length(), submit_request()'s optional parameter) to emit one -- see the doc
+// comments in session.hpp. request_handlers.cpp's echo() propagates whatever it read onto the
+// response it writes, so round-tripping through /echo below exercises both directions at once, with
+// and without a header present.
+//
+// -------------------------------------------------------------------------------------------------
+
+/// Awaits the response concurrently with uploading through `request`, records its content-length
+/// header via `content_length`, then drains and returns the body's byte count. A free function
+/// rather than an inline coroutine lambda -- see the caveat on coroutine lambdas invoked as
+/// temporaries above stop_server_after().
+///
+/// Needed because /echo (see request_handlers.cpp's echo()) defers submit() until it has read the
+/// first request chunk, so -- like PostRange/Timeout_UnlimitedEchoRoundTrip above --
+/// get_response() can't be awaited before the client starts sending without deadlocking; both have
+/// to run concurrently, e.g. via when_all() alongside sendAndForceEOF().
+capy::io_task<std::size_t> get_response_and_count(Session::ClientRequest& request,
+                                                  std::optional<std::size_t>& content_length)
+{
+   auto [ec, response] = co_await request.get_response();
+   if (ec)
+      co_return {ec, 0u};
+   content_length = response.content_length();
+   co_return co_await nghttp2_corosio_test::count(response);
+}
+
+TEST_F(ClientAsync, ContentLength_PresentOnRequest_EchoedOnResponse)
+{
+   std::optional<std::size_t> seen_on_server;
+   custom = [&](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      seen_on_server = request.content_length();
+      co_await nghttp2_corosio_test::echo(std::move(request), std::move(response));
+   };
+
+   constexpr std::size_t bytes = 1024;
+   std::optional<std::size_t> seen_on_client;
+   run([&](Session session) -> capy::task<>
+   {
+      auto [ec, request] = co_await session.submit_request("/echo", bytes);
+      EXPECT_FALSE(ec);
+
+      static constexpr std::array<std::uint8_t, bytes> data{};
+      auto [wec, sent, received] = co_await capy::when_all(
+         nghttp2_corosio_test::sendAndForceEOF(request, std::span<const std::uint8_t>(data)),
+         get_response_and_count(request, seen_on_client));
+      EXPECT_FALSE(wec);
+      EXPECT_EQ(received, bytes);
+   });
+
+   EXPECT_EQ(seen_on_client, std::make_optional(bytes));
+   ASSERT_TRUE(seen_on_server.has_value());
+   EXPECT_EQ(*seen_on_server, bytes);
+}
+
+TEST_F(ClientAsync, ContentLength_AbsentOnRequest_AbsentOnResponse)
+{
+   std::optional<std::size_t> seen_on_server = 0; // any value != nullopt, so the test can tell
+   custom = [&](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      seen_on_server = request.content_length();
+      co_await nghttp2_corosio_test::echo(std::move(request), std::move(response));
+   };
+
+   std::optional<std::size_t> seen_on_client = 0; // ditto
+   run([&](Session session) -> capy::task<>
+   {
+      // No content_length argument -- submit_request() defaults to not sending the header.
+      auto [ec, request] = co_await session.submit_request("/echo");
+      EXPECT_FALSE(ec);
+
+      constexpr std::size_t bytes = 1024;
+      static constexpr std::array<std::uint8_t, bytes> data{};
+      auto [wec, sent, received] = co_await capy::when_all(
+         nghttp2_corosio_test::sendAndForceEOF(request, std::span<const std::uint8_t>(data)),
+         get_response_and_count(request, seen_on_client));
+      EXPECT_FALSE(wec);
+      EXPECT_EQ(received, bytes);
+   });
+
+   EXPECT_FALSE(seen_on_server.has_value());
+   EXPECT_FALSE(seen_on_client.has_value());
+}
+
+TEST_F(ClientAsync, ContentLength_SetOnResponse_SeenByClient)
+{
+   static constexpr auto body = "Hello, World!"sv;
+   custom = [](Session::Request request, Session::Response response) -> capy::task<>
+   {
+      std::ignore = request;
+      response.content_length(body.size());
+      [[maybe_unused]] auto s = co_await response.submit();
+      [[maybe_unused]] auto r = co_await response.write_eof(capy::make_buffer(body));
+   };
+
+   run([](Session session) -> capy::task<>
+   {
+      auto [ec, request] = co_await session.submit_request("/");
+      EXPECT_FALSE(ec);
+      auto [wec] = co_await request.write_eof();
+      EXPECT_FALSE(wec);
+
+      auto [gec, response] = co_await request.get_response();
+      EXPECT_FALSE(gec);
+      EXPECT_EQ(response.content_length(), std::make_optional(body.size()));
+
+      auto [rec, received] = co_await nghttp2_corosio_test::count(response);
+      EXPECT_EQ(received, body.size());
+   });
+}
+
 TEST_F(ClientAsync, PostToUnknownPath_Returns404)
 {
    run([](Session session) -> capy::task<>

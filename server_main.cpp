@@ -31,6 +31,11 @@ capy::task<> echo(nghttp2_corosio::Session::Request request,
    logd("[{}] echo: streaming request body back", request.path());
    static const nghttp2_corosio::Session::Headers headers{{"content-type", "application/octet-stream"}};
 
+   // The echoed body is byte-for-byte what was read, so the request's content-length (if any)
+   // still applies to the response -- set before the first submit() below, per submit()'s doc
+   // comment in session.hpp.
+   response.content_length(request.content_length());
+
    bool submitted = false;
    std::array<std::uint8_t, 64 * 1024> buffer;
    for (;;)

@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,6 +71,12 @@ public:
    /// Set by on_header_callback() as the :path pseudo-header arrives (server sessions only).
    void set_path(std::string path) { path_ = std::move(path); }
    const std::string& path() const noexcept { return path_; }
+
+   /// Set by on_header_callback() as a content-length header arrives -- request headers on a
+   /// server session, response headers on a client session. Surfaced via
+   /// Session::Request::content_length()/ClientResponse::content_length().
+   void set_content_length(std::size_t n) noexcept { content_length_ = n; }
+   std::optional<std::size_t> content_length() const noexcept { return content_length_; }
 
    /// Set by on_header_callback() as the :status pseudo-header arrives (client sessions only,
    /// on the response HEADERS frame). Wakes anything suspended in status().
@@ -291,6 +298,7 @@ private:
    std::int32_t id_;
    bool closed_ = false;
    std::string path_;
+   std::optional<std::size_t> content_length_;
    std::string log_prefix_;
 
    // response status (client sessions only)

@@ -13,6 +13,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -51,7 +52,8 @@ public:
    class Request
    {
    public:
-      Request(std::string path, Reader reader) : path_(std::move(path)), reader_(std::move(reader))
+      Request(std::string path, std::optional<std::size_t> content_length, Reader reader)
+         : path_(std::move(path)), content_length_(content_length), reader_(std::move(reader))
       {
          logd("\x1b[1;35mServer::Request: ctor\x1b[0m");
       }
@@ -74,6 +76,12 @@ public:
 
       std::string_view path() const noexcept { return path_; }
 
+      /// The request's `content-length` header, if the peer sent one -- parsed once, when the
+      /// header arrives, not recomputed from bytes actually read. See
+      /// https://www.boost.org/doc/libs/latest/libs/beast/doc/html/beast/ref/boost__beast__http__message.html's
+      /// has_content_length()/content_length() for the read-side counterpart this mirrors.
+      std::optional<std::size_t> content_length() const noexcept { return content_length_; }
+
       template <boost::capy::MutableBufferSequence MB>
       boost::capy::io_task<std::size_t> read_some(MB buffers)
       {
@@ -88,6 +96,7 @@ public:
 
    private:
       std::string path_;
+      std::optional<std::size_t> content_length_;
       Reader reader_;
    };
 
@@ -98,13 +107,17 @@ public:
    class ClientResponse
    {
    public:
-      ClientResponse(unsigned int status, Reader reader)
-         : status_(status), reader_(std::move(reader))
+      ClientResponse(unsigned int status, std::optional<std::size_t> content_length, Reader reader)
+         : status_(status), content_length_(content_length), reader_(std::move(reader))
       {
       }
 
       /// The response's `:status` pseudo-header.
       unsigned int status() const noexcept { return status_; }
+
+      /// The response's `content-length` header, if the peer sent one. See
+      /// Request::content_length()'s doc comment.
+      std::optional<std::size_t> content_length() const noexcept { return content_length_; }
 
       template <boost::capy::MutableBufferSequence MB>
       boost::capy::io_task<std::size_t> read_some(MB buffers)
@@ -114,6 +127,7 @@ public:
 
    private:
       unsigned int status_;
+      std::optional<std::size_t> content_length_;
       Reader reader_;
    };
 
@@ -235,9 +249,22 @@ public:
       Response(Response&&) noexcept = default;
       Response& operator=(Response&&) noexcept = default;
 
+      /// Sets (or, with `std::nullopt`, clears) the `content-length` header submitted by the next
+      /// submit() call. Like beast's `message::content_length()` (see
+      /// https://www.boost.org/doc/libs/latest/libs/beast/doc/html/beast/ref/boost__beast__http__message.html),
+      /// this only ever affects the header nghttp2 sends -- it doesn't validate that the handler
+      /// actually writes that many bytes. Must be called before submit(); submit() is what
+      /// actually adds the header, so setting this afterwards has no effect.
+      void content_length(std::optional<std::size_t> content_length) noexcept
+      {
+         content_length_ = content_length;
+      }
+
       /// Submits the response status/headers. Must be called exactly once, before any write.
       boost::capy::io_task<> submit(unsigned int status = 200, Headers headers = {})
       {
+         if (content_length_)
+            headers.emplace_back("content-length", std::to_string(*content_length_));
          co_return co_await submit_(status, headers);
       }
 
@@ -274,6 +301,7 @@ public:
       Writer writer_;
       SubmitFn submit_;
       WriteEofFn write_eof_;
+      std::optional<std::size_t> content_length_;
    };
 
    Session() = default;
@@ -291,7 +319,12 @@ public:
    /// writable request body plus get_response(), which resolves once the response's `:status`
    /// pseudo-header has arrived. Pseudo-headers beyond :method/:path are currently fixed (POST,
    /// http, an authority derived from the peer endpoint) -- a real headers API will come later.
-   boost::capy::io_task<ClientRequest> submit_request(std::string_view path);
+   ///
+   /// Unlike Response::content_length() on the server side, `content_length` here isn't a
+   /// separate setter called before some later submit step -- the request HEADERS frame is sent
+   /// by the time this returns, so it has to be supplied up front instead.
+   boost::capy::io_task<ClientRequest>
+   submit_request(std::string_view path, std::optional<std::size_t> content_length = std::nullopt);
 
 private:
    std::shared_ptr<Impl> impl_;

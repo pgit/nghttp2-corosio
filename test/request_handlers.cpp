@@ -18,6 +18,11 @@ namespace nghttp2_corosio_test
 // comment on server_main.cpp's echo() (same shape) for why that matters for throughput.
 capy::task<> echo(Session::Request request, Session::Response response)
 {
+   // The echoed body is byte-for-byte what was read, so the request's content-length (if any)
+   // still applies to the response -- set before the first submit() below, per submit()'s doc
+   // comment in session.hpp.
+   response.content_length(request.content_length());
+
    bool submitted = false;
    std::array<std::uint8_t, 64 * 1024> buffer;
    for (;;)

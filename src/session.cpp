@@ -140,6 +140,20 @@ int on_header_callback(nghttp2_session*, const nghttp2_frame* frame, const uint8
       if (auto stream = session->find_stream(frame->hd.stream_id))
          stream->set_status(status);
    }
+   else if (name_sv == "content-length")
+   {
+      std::size_t content_length = 0;
+      auto [ptr, ec] =
+         std::from_chars(value_sv.data(), value_sv.data() + value_sv.size(), content_length);
+      if (ec == std::errc{} && ptr == value_sv.data() + value_sv.size())
+      {
+         if (auto stream = session->find_stream(frame->hd.stream_id))
+            stream->set_content_length(content_length);
+      }
+      else
+         logw("[{}] on_header_callback: ignoring malformed content-length: {}",
+              session->log_prefix(frame->hd.stream_id), value_sv);
+   }
 
    return 0;
 }
@@ -265,9 +279,10 @@ Session::~Session() = default;
 
 Session::executor_type Session::get_executor() const noexcept { return impl_->get_executor(); }
 
-capy::io_task<Session::ClientRequest> Session::submit_request(std::string_view path)
+capy::io_task<Session::ClientRequest>
+Session::submit_request(std::string_view path, std::optional<std::size_t> content_length)
 {
-   return impl_->submit_request(path);
+   return impl_->submit_request(path, content_length);
 }
 
 // =================================================================================================
@@ -504,7 +519,8 @@ capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream)
 {
    auto self = shared_from_this(); // keep the session alive for the duration of the coroutine
 
-   Session::Request request(stream->path(), Session::Reader(StreamReader(stream)));
+   Session::Request request(stream->path(), stream->content_length(),
+                            Session::Reader(StreamReader(stream)));
    Session::Response response{Session::Writer(StreamWriter(stream)),
                               [self, stream](unsigned int status, const Session::Headers& headers)
    { return self->submit_response(stream, status, headers); },
@@ -556,7 +572,8 @@ capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> stream,
 
 // -------------------------------------------------------------------------------------------------
 
-capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::string_view path)
+capy::io_task<Session::ClientRequest> Session::Impl::submit_request(
+   std::string_view path, std::optional<std::size_t> content_length)
 {
    if (role_ != Role::client)
       co_return {std::make_error_code(std::errc::operation_not_permitted),
@@ -569,17 +586,28 @@ capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::string_
    nghttp2_data_provider2 prd{.source = {.ptr = stream.get()},
                               .read_callback = data_source_read_callback};
    std::string path_str(path);
-   nghttp2_nv nva[]{
+   std::vector<nghttp2_nv> nva{
       make_nv(":method", "POST"),
       make_nv(":scheme", "http"),
       make_nv(":path", path_str),
       make_nv(":authority", "localhost"),
    };
 
+   // Unlike Response::content_length() on the server side, there's no separate submit() step to
+   // defer this to -- the HEADERS frame goes out below, in this same call -- so it has to be
+   // folded into nva up front instead. content_length_str must outlive nghttp2_submit_request2().
+   std::string content_length_str;
+   if (content_length)
+   {
+      content_length_str = std::to_string(*content_length);
+      nva.push_back(make_nv("content-length", content_length_str));
+   }
+
    for (const auto& nv : nva)
       mlogd("  {}", nv);
 
-   auto id = nghttp2_submit_request2(session_, nullptr, nva, std::size(nva), &prd, stream.get());
+   auto id =
+      nghttp2_submit_request2(session_, nullptr, nva.data(), nva.size(), &prd, stream.get());
    if (id < 0)
    {
       mloge("submit_request: nghttp2_submit_request2 failed: {}", nghttp2_strerror(id));
@@ -601,7 +629,8 @@ capy::io_task<Session::ClientRequest> Session::Impl::submit_request(std::string_
                                      [stream]() -> capy::io_task<Session::ClientResponse>
    {
       auto [ec, status] = co_await stream->status();
-      co_return {ec, Session::ClientResponse(status, Session::Reader(StreamReader(stream)))};
+      co_return {ec, Session::ClientResponse(status, stream->content_length(),
+                                             Session::Reader(StreamReader(stream)))};
    })};
 }
 
