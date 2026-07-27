@@ -4,11 +4,13 @@
 
 #include <boost/corosio/endpoint.hpp>
 #include <boost/corosio/io_context.hpp>
+#include <boost/corosio/tls_context.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace nghttp2_corosio
@@ -32,6 +34,13 @@ struct Config
 
    /// Called once per incoming request. If unset, every request gets an empty 200 response.
    RequestHandler handler;
+
+   /// If set, incoming connections are wrapped in TLS before the HTTP/2 handshake, negotiating
+   /// "h2" via ALPN; a connection that doesn't negotiate "h2" is dropped. Unset (default) serves
+   /// plaintext h2c, as before. The context must already have a certificate and private key
+   /// loaded (see boost::corosio::tls_context::use_certificate_chain_file/use_private_key_file)
+   /// and, typically, ALPN configured via set_alpn({"h2", "http/1.1"}).
+   std::optional<boost::corosio::tls_context> tls;
 };
 
 // =================================================================================================

@@ -19,10 +19,13 @@ public:
 
    boost::capy::any_executor get_executor() const noexcept { return executor_; }
 
-   /// Connects a fresh tcp_socket to `ep`, wraps it in an any_stream, and spawns a client-role
-   /// Session::Impl::run() on it -- the counterpart to Server::Impl::accept_loop() spawning a
-   /// server-role one per accepted connection.
-   boost::capy::io_task<Session> connect(boost::corosio::endpoint ep);
+   /// Connects a fresh tcp_socket to `ep`, optionally TLS-wraps it (see Client::connect()), wraps
+   /// the result in an any_stream, and spawns a client-role Session::Impl::run() on it -- the
+   /// counterpart to Server::Impl::accept_loop() spawning a server-role one per accepted
+   /// connection.
+   boost::capy::io_task<Session> connect(boost::corosio::endpoint ep,
+                                          std::optional<boost::corosio::tls_context> tls,
+                                          std::string hostname);
 
 private:
    boost::capy::any_executor executor_;

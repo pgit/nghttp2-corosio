@@ -10,6 +10,7 @@
 #include <boost/capy/ex/this_coro.hpp>
 #include <boost/capy/io/any_stream.hpp>
 #include <boost/corosio/ipv6_address.hpp>
+#include <boost/corosio/openssl_stream.hpp>
 #include <boost/corosio/socket_option.hpp>
 #include <boost/corosio/tcp_socket.hpp>
 
@@ -95,9 +96,27 @@ capy::task<> Server::Impl::accept_loop()
 
       logi("[\x1b[1;31mserver\x1b[0m] [{}] new connection", peer.remote_endpoint());
 
-      // TODO: wrap `peer` in a TLS stream (corosio::openssl_stream / wolfssl_stream) here once
-      // TLS support is added, before erasing it into `any_stream` below.
-      capy::any_stream stream(std::move(peer));
+      capy::any_stream stream;
+      if (config_.tls)
+      {
+         corosio::openssl_stream tls(std::move(peer), *config_.tls);
+         if (auto [ec] = co_await tls.handshake(corosio::tls_role::server); ec)
+         {
+            logw("[server] TLS handshake failed: {}", ec.message());
+            continue;
+         }
+         if (tls.alpn_protocol() != "h2")
+         {
+            logw("[server] TLS handshake negotiated unsupported ALPN protocol '{}'",
+                 tls.alpn_protocol());
+            continue;
+         }
+         stream = capy::any_stream(std::move(tls));
+      }
+      else
+      {
+         stream = capy::any_stream(std::move(peer));
+      }
 
       auto session = std::make_shared<Session::Impl>(ioc_.get_executor(), std::move(stream),
                                                      Session::Impl::Role::server, config_.handler);

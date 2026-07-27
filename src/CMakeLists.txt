@@ -22,4 +22,5 @@ target_link_libraries(nghttp2-corosio
         Boost::corosio
     PRIVATE
         PkgConfig::NGHTTP2
+        Boost::corosio_openssl
 )

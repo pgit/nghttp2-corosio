@@ -19,6 +19,7 @@ add_executable(nghttp2-corosio-tests
     test_client_async.cpp
     test_external.cpp
     test_server.cpp
+    test_tls.cpp
     utils.cpp
 )
 
@@ -28,6 +29,38 @@ target_link_libraries(nghttp2-corosio-tests
         GTest::gtest_main
         Boost::process
 )
+
+# =================================================================================================
+#
+# TLS tests need a real certificate chain to hand to nghttp2_corosio::Config::tls /
+# tls_context::use_certificate_chain_file. pki/create.sh (cfssl, present in the devcontainer
+# image, same as anyhttp's own pki/ setup) generates a root -> intermediate -> {server,client}
+# chain into pki/out/, gitignored since it's regenerated here rather than committed. Idempotent
+# (skips files that already exist), so re-configuring doesn't regenerate a chain that's already
+# there.
+#
+# =================================================================================================
+
+add_custom_command(
+    OUTPUT
+        ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/root.pem
+        ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/server-fullchain.pem
+        ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/server-key.pem
+        ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/client-fullchain.pem
+        ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/client-key.pem
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/pki/create.sh
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/pki
+    COMMENT "Generating test/pki/out/ certificate chain (cfssl)"
+    VERBATIM
+)
+add_custom_target(test_pki_certs DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/root.pem
+    ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/server-fullchain.pem
+    ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/server-key.pem
+    ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/client-fullchain.pem
+    ${CMAKE_CURRENT_SOURCE_DIR}/pki/out/client-key.pem
+)
+add_dependencies(nghttp2-corosio-tests test_pki_certs)
 
 include(GoogleTest)
 # WORKING_DIRECTORY matches anyhttp's own test/CMakeLists.txt: External's tests reference test
