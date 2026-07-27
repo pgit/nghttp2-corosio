@@ -35,9 +35,10 @@ target_link_libraries(nghttp2-corosio-tests
 # TLS tests need a real certificate chain to hand to nghttp2_corosio::Config::tls /
 # tls_context::use_certificate_chain_file. pki/create.sh (cfssl, present in the devcontainer
 # image, same as anyhttp's own pki/ setup) generates a root -> intermediate -> {server,client}
-# chain into pki/out/, gitignored since it's regenerated here rather than committed. Idempotent
-# (skips files that already exist), so re-configuring doesn't regenerate a chain that's already
-# there.
+# chain into pki/out/, gitignored since it's regenerated here rather than committed. Always
+# regenerates the whole chain from scratch (see create.sh's own comment for why a per-file
+# idempotency check is actively wrong here -- CMake/Ninja can delete a subset of this command's
+# declared OUTPUT files out from under it).
 #
 # =================================================================================================
 

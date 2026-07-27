@@ -60,3 +60,9 @@ target_link_libraries(server_main PRIVATE nghttp2-corosio)
 enable_testing()
 add_subdirectory(test)
 
+# Standalone, minimal reproduction of a corosio openssl_stream deadlock -- see tls_repro.cpp's own
+# top comment and test/test_tls.cpp's DISABLED_EchoesRequestBodyOverTls for the full write-up.
+add_executable(tls_repro tls_repro.cpp)
+target_link_libraries(tls_repro PRIVATE Boost::corosio Boost::corosio_openssl)
+add_dependencies(tls_repro test_pki_certs)
+
