@@ -1,5 +1,7 @@
 #include "request_handlers.hpp"
 
+#include "../echo_handler.hpp"
+
 #include <boost/capy/buffers.hpp>
 #include <boost/capy/cond.hpp>
 
@@ -14,32 +16,9 @@ namespace nghttp2_corosio_test
 
 // =================================================================================================
 
-// submit() is deferred to just before the first write rather than called up front -- see the
-// comment on server_main.cpp's echo() (same shape) for why that matters for throughput.
 capy::task<> echo(Session::Request request, Session::Response response)
 {
-   // The echoed body is byte-for-byte what was read, so the request's content-length (if any)
-   // still applies to the response -- set before the first submit() below, per submit()'s doc
-   // comment in session.hpp.
-   response.content_length(request.content_length());
-
-   bool submitted = false;
-   std::array<std::uint8_t, 64 * 1024> buffer;
-   for (;;)
-   {
-      auto [rec, n] = co_await request.read_some(capy::make_buffer(buffer));
-
-      if (!std::exchange(submitted, true))
-         [[maybe_unused]] auto s = co_await response.submit();
-
-      auto [wec, wn] = co_await response.write(capy::make_buffer(buffer, n));
-      if (rec || wec)
-         break;
-   }
-   if (!submitted)
-      [[maybe_unused]] auto s = co_await response.submit();
-
-   [[maybe_unused]] auto result = co_await response.write_eof();
+   co_await echo_handler(std::move(request), std::move(response));
 }
 
 capy::task<> eat_request(Session::Request request, Session::Response response)

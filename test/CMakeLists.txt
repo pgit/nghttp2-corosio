@@ -12,6 +12,7 @@ FetchContent_MakeAvailable(googletest)
 find_package(boost_process 1.86 CONFIG REQUIRED)
 
 add_executable(nghttp2-corosio-tests
+    ${CMAKE_SOURCE_DIR}/echo_handler.cpp
     request_handlers.cpp
     test_any_read_stream_timeout_bug.cpp
     test_client.cpp

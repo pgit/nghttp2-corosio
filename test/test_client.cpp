@@ -1,6 +1,8 @@
 #include "boost/capy/ex/this_coro.hpp"
 #include "utils.hpp"
 
+#include "../echo_handler.hpp"
+
 #include <nghttp2-corosio/client.hpp>
 #include <nghttp2-corosio/server.hpp>
 
@@ -21,33 +23,6 @@ namespace corosio = boost::corosio;
 
 namespace
 {
-
-// Same shape as server_main.cpp's echo handler: streams the request body straight back. submit()
-// is deferred to just before the first write -- see the comment on server_main.cpp's echo() for
-// why that matters for throughput.
-capy::task<> echo(nghttp2_corosio::Session::Request request,
-                         nghttp2_corosio::Session::Response response)
-{
-   bool submitted = false;
-   std::array<std::uint8_t, 64 * 1024> buffer;
-   for (;;)
-   {
-      auto [rec, n] = co_await request.read_some(capy::make_buffer(buffer));
-      if (rec)
-         break;
-
-      if (!std::exchange(submitted, true))
-         [[maybe_unused]] auto s = co_await response.submit();
-
-      auto [wec, wn] = co_await response.write(capy::make_buffer(buffer, n));
-      if (wec)
-         break;
-   }
-   if (!submitted)
-      [[maybe_unused]] auto s = co_await response.submit();
-
-   [[maybe_unused]] auto result = co_await response.write_eof();
-}
 
 // Free coroutines rather than capturing lambdas: a capturing lambda that is a coroutine and gets
 // invoked as a temporary (`[...]() -> task<>{...}()`) dangles as soon as the coroutine suspends
@@ -133,7 +108,7 @@ TEST(ClientTest, EchoesRequestBody)
 {
    nghttp2_corosio::Config config;
    config.port = 0; // ask the OS for an unused port
-   config.handler = echo;
+   config.handler = echo_handler;
    nghttp2_corosio::Server server(config);
    auto port = server.local_endpoint().port();
 

@@ -4,7 +4,7 @@
 // Test-only helper coroutines, ported from anyhttp's request_handlers.hpp
 // (https://github.com/pgit/anyhttp/blob/master/include/anyhttp/request_handlers.hpp) to
 // nghttp2-corosio's Session/Writer/ClientResponse API. Kept under test/ rather than include/,
-// since nothing outside the test binary needs them (see server_main.cpp's own local echo()).
+// since nothing outside the test binary needs them.
 //
 // Unlike anyhttp's originals (boost::asio awaitable<>, throwing on error), these are io_task<>
 // based -- consistent with the rest of this library, and so they can be combined directly with

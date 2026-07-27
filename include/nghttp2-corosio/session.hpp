@@ -11,6 +11,7 @@
 #include <boost/capy/read.hpp>
 #include <boost/capy/write.hpp>
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -90,6 +91,14 @@ public:
       /// and may contain duplicate names, matching what arrived on the wire.
       const Headers& headers() const noexcept { return headers_; }
 
+      /// Whether the peer sent a header with the given name, per headers()' doc comment above --
+      /// an exact, case-sensitive match against the wire name, since HTTP/2 mandates lowercase
+      /// header field names.
+      bool has_header(std::string_view name) const noexcept
+      {
+         return std::ranges::any_of(headers_, [&](auto& kv) { return kv.first == name; });
+      }
+
       template <boost::capy::MutableBufferSequence MB>
       boost::capy::io_task<std::size_t> read_some(MB buffers)
       {
@@ -133,6 +142,13 @@ public:
       /// Every header the peer sent on the response, other than the `:status` pseudo-header
       /// already surfaced via status(). See Request::headers()'s doc comment.
       const Headers& headers() const noexcept { return headers_; }
+
+      /// Whether the peer sent a header with the given name. See Request::has_header()'s doc
+      /// comment.
+      bool has_header(std::string_view name) const noexcept
+      {
+         return std::ranges::any_of(headers_, [&](auto& kv) { return kv.first == name; });
+      }
 
       template <boost::capy::MutableBufferSequence MB>
       boost::capy::io_task<std::size_t> read_some(MB buffers)
