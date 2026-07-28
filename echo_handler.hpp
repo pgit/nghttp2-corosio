@@ -29,9 +29,9 @@
 /// The echo loop itself. Reports failure via the returned io_result rather than throwing or
 /// swallowing it -- see echo_handler() below for the task<>-returning adapter most callers want.
 boost::capy::io_task<> echo(nghttp2_corosio::Session::Request request,
-                             nghttp2_corosio::Session::Response response);
+                            nghttp2_corosio::Session::Response response);
 
 /// Adapts echo() to the task<>-returning signature nghttp2_corosio::Config::handler needs, logging
 /// (rather than propagating) any error echo() itself reports.
 boost::capy::task<> echo_handler(nghttp2_corosio::Session::Request request,
-                                  nghttp2_corosio::Session::Response response);
+                                 nghttp2_corosio::Session::Response response);
