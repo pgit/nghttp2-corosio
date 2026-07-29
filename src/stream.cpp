@@ -4,11 +4,9 @@
 
 #include <nghttp2/nghttp2.h>
 
-#include <algorithm>
-#include <cstring>
-
 namespace nghttp2_corosio
 {
+using namespace boost::capy;
 
 // =================================================================================================
 
@@ -63,25 +61,11 @@ std::ptrdiff_t Stream::producer_callback(std::uint8_t* buf, std::size_t length,
       return NGHTTP2_ERR_DEFERRED;
    }
 
-   // Copy directly out of the caller's buffers (pending_ references them, doesn't own them) at
-   // the current cumulative offset, walking however many of the descriptors are needed to fill
-   // `length` or exhaust what's left.
-   std::size_t copied = 0;
-   std::size_t skip = write_offset_;
-   for (std::size_t i = 0; i < pending_count_ && copied < length; ++i)
-   {
-      auto const& b = pending_[i];
-      if (skip >= b.size())
-      {
-         skip -= b.size();
-         continue;
-      }
-      auto const avail = b.size() - skip;
-      auto const n = std::min(avail, length - copied);
-      std::memcpy(buf + copied, static_cast<const std::uint8_t*>(b.data()) + skip, n);
-      copied += n;
-      skip = 0;
-   }
+   // Copy directly out of the caller's buffers (pending_cursor_ references them, doesn't own
+   // them) via pending_cursor_, which was seated over pending_ by write_impl() and tracks
+   // position across however many calls it takes to drain it.
+   auto const copied = buffer_copy(mutable_buffer(buf, length), pending_cursor_.data());
+   pending_cursor_.consume(copied);
    write_offset_ += copied;
 
    // write_some()/write() (write_eof_requested_ == false) complete right here, after this one
@@ -90,7 +74,7 @@ std::ptrdiff_t Stream::producer_callback(std::uint8_t* buf, std::size_t length,
    // wants everything sent. write_eof(buffers) can't stop early like that: its contract is to
    // send everything and only then mark EOF, atomically, so it keeps waiting across as many
    // calls as it takes to fully drain pending_ first.
-   bool const fully_drained = write_offset_ == pending_size_;
+   bool const fully_drained = write_offset_ == pending_.byte_size();
    if (fully_drained || !write_eof_requested_)
    {
       if (write_eof_requested_)

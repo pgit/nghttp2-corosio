@@ -7,8 +7,10 @@
 #include <boost/capy/buffers.hpp>
 #include <boost/capy/buffers/buffer_copy.hpp>
 #include <boost/capy/buffers/buffer_param.hpp>
+#include <boost/capy/buffers/consuming_buffers.hpp>
 #include <boost/capy/concept/read_stream.hpp>
 #include <boost/capy/concept/write_stream.hpp>
+#include <boost/capy/detail/buffer_array.hpp>
 #include <boost/capy/error.hpp>
 #include <boost/capy/ex/async_event.hpp>
 #include <boost/capy/io_result.hpp>
@@ -16,8 +18,6 @@
 #include <boost/capy/read.hpp>
 #include <boost/capy/write.hpp>
 
-#include <array>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -188,7 +188,8 @@ public:
          explicit Sink(boost::capy::buffer_param<MB>& bp) : bp(bp) {}
          std::size_t put(const std::uint8_t* data, std::size_t len) override
          {
-            auto const n = boost::capy::buffer_copy(bp.data(), boost::capy::const_buffer(data, len));
+            auto const n =
+               boost::capy::buffer_copy(bp.data(), boost::capy::const_buffer(data, len));
             bp.consume(n);
             copied += n;
             return n;
@@ -238,7 +239,12 @@ public:
    template <boost::capy::ConstBufferSequence CB>
    boost::capy::io_task<std::size_t> write_some(CB buffers)
    {
-      co_return co_await write_impl(buffers, false);
+      // Not a coroutine: write_impl()'s parameter type converts `buffers` into a self-contained,
+      // max_iovec_-capped array right here in the argument list, the same way corosio's
+      // tls_stream::read_some()/do_read_some() split a template wrapper from a concrete-typed
+      // virtual does. The array is copied by value into write_impl()'s own coroutine frame, so
+      // there's no borrowed reference whose lifetime this function would need to keep alive.
+      return write_impl(buffers, false);
    }
 
    template <boost::capy::ConstBufferSequence CB>
@@ -250,13 +256,13 @@ public:
    template <boost::capy::ConstBufferSequence CB>
    boost::capy::io_task<std::size_t> write_eof(CB buffers)
    {
-      co_return co_await write_impl(buffers, true);
+      return write_impl(buffers, true);
    }
 
    boost::capy::io_task<> write_eof()
    {
-      auto [ec, n] = co_await write_impl(boost::capy::const_buffer{}, true);
-      (void)n;
+      auto [ec, n] = co_await write_impl({}, true);
+      std::ignore = n;
       co_return boost::capy::io_result<>{ec};
    }
 
@@ -276,28 +282,26 @@ private:
                                                     : boost::capy::error::stream_truncated);
    }
 
-   template <boost::capy::ConstBufferSequence CB>
-   boost::capy::io_task<std::size_t> write_impl(CB buffers, bool eof)
+   /// Not a template: write_some()/write_eof() above convert their arbitrary CB into this exact,
+   /// self-contained array type at the call site -- mirroring corosio's
+   /// tls_stream::do_read_some()/do_write_some(), which take the same kind of fixed-capacity
+   /// array by value rather than an arbitrary buffer sequence. producer_callback() therefore only
+   /// ever has to walk one concrete representation, capped at capy's iovec bound
+   /// (boost::capy::detail::max_iovec_) by construction, not by a locally-reasserted invariant.
+   boost::capy::io_task<std::size_t>
+   write_impl(boost::capy::detail::const_buffer_array<boost::capy::detail::max_iovec_> buffers,
+              bool eof)
    {
       if (closed_)
          co_return {boost::capy::make_error_code(boost::capy::error::eof), 0};
 
-      // Reference the caller's buffers, not a copy of their bytes: the WriteSink contract
-      // already requires `buffers` to stay alive until this co_await completes (see
-      // boost::capy::write()'s own documented precondition), so producer_callback() can read
-      // straight out of the caller's memory across however many invocations it takes. Only the
-      // (small, fixed-count) buffer *descriptors* are copied here, never the data they describe.
-      pending_count_ = 0;
-      pending_size_ = 0;
-      for (auto it = boost::capy::begin(buffers); it != boost::capy::end(buffers); ++it)
-      {
-         boost::capy::const_buffer b(*it);
-         if (b.size() == 0)
-            continue;
-         assert(pending_count_ < pending_.size());
-         pending_[pending_count_++] = b;
-         pending_size_ += b.size();
-      }
+      // Copy the descriptors (pointer+size pairs, not the bytes they describe) into pending_ so
+      // producer_callback() -- a plain member function, not part of this coroutine's frame -- can
+      // reach them; `buffers` itself only lives as long as this frame stays suspended, which is
+      // exactly as long as producer_callback() needs it, but it isn't reachable from there
+      // directly. pending_cursor_ tracks how much of pending_ has been consumed so far.
+      pending_ = buffers;
+      pending_cursor_ = decltype(pending_cursor_){pending_};
 
       write_offset_ = 0;
       write_eof_requested_ = eof;
@@ -360,16 +364,12 @@ private:
 
    // write side
    //
-   // pending_ holds a *view* onto the current write's buffer descriptors (pointer+size pairs),
-   // not a copy of the bytes -- see write_impl()'s doc comment. Its fixed capacity matches capy's
-   // own any_write_stream (used for write_some()/write()) and Session::Response/ClientRequest's
-   // write_eof() flattening step (session.hpp), neither of which ever hands Stream a
-   // scatter/gather sequence longer than capy's iovec bound (boost::capy::detail::max_iovec_, 16
-   // at the time of writing).
-   static constexpr std::size_t max_pending_buffers_ = 16;
-   std::array<boost::capy::const_buffer, max_pending_buffers_> pending_{};
-   std::size_t pending_count_ = 0;
-   std::size_t pending_size_ = 0; // total bytes across pending_[0, pending_count_)
+   // pending_ owns a copy of the current write's buffer descriptors (pointer+size pairs, not the
+   // bytes) -- see write_impl()'s doc comment. pending_cursor_ walks it across however many
+   // producer_callback() invocations it takes to drain -- optional only because consuming_buffers
+   // has no default state; it's always engaged by the time producer_callback() can run.
+   boost::capy::detail::const_buffer_array<boost::capy::detail::max_iovec_> pending_;
+   boost::capy::consuming_buffers<decltype(pending_)> pending_cursor_{pending_};
    std::size_t write_offset_ = 0; // bytes of pending_ consumed so far by producer_callback()
    bool write_pending_ = false;
    bool write_eof_requested_ = false;
