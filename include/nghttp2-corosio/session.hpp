@@ -3,7 +3,6 @@
 #include "nghttp2-corosio/logging.hpp"
 
 #include <boost/capy/buffers.hpp>
-#include <boost/capy/detail/buffer_array.hpp>
 #include <boost/capy/ex/any_executor.hpp>
 #include <boost/capy/io/any_read_stream.hpp>
 #include <boost/capy/io/any_write_stream.hpp>
@@ -211,11 +210,17 @@ public:
       template <boost::capy::ConstBufferSequence CB>
       boost::capy::io_task<std::size_t> write_eof(CB buffers)
       {
-         // Must be a coroutine, not a plain forwarding function: ba's lifetime needs to span the
-         // co_await below, since capy's task<> is lazy -- write_eof_'s body doesn't run (and
-         // doesn't copy out of ba) until driven by this co_await.
-         boost::capy::detail::const_buffer_array<boost::capy::detail::max_iovec_> ba(buffers);
-         co_return co_await write_eof_(ba.to_span());
+         // write_eof_ only accepts a single max_iovec_-capped span, so it can't take an
+         // arbitrary-length buffers directly the way write_some()/write() above can -- drain the
+         // whole (possibly unbounded) sequence through the composed write() algorithm first, then
+         // signal end-of-body with an empty write_eof_ call.
+         auto [ec, n] = co_await boost::capy::write(writer_, buffers);
+         if (ec)
+            co_return {ec, n};
+
+         auto [eof_ec, eof_n] = co_await write_eof_({});
+         (void)eof_n;
+         co_return {eof_ec, n};
       }
 
       boost::capy::io_task<> write_eof()
@@ -315,11 +320,16 @@ public:
       template <boost::capy::ConstBufferSequence CB>
       boost::capy::io_task<std::size_t> write_eof(CB buffers)
       {
-         // Must be a coroutine, not a plain forwarding function: ba's lifetime needs to span the
-         // co_await below, since capy's task<> is lazy -- write_eof_'s body doesn't run (and
-         // doesn't copy out of ba) until driven by this co_await.
-         boost::capy::detail::const_buffer_array<boost::capy::detail::max_iovec_> ba(buffers);
-         co_return co_await write_eof_(ba.to_span());
+         // write_eof_ only accepts a single max_iovec_-capped span, so it can't take an
+         // arbitrary-length buffers directly the way write_some()/write() above can -- drain the
+         // whole (possibly unbounded) sequence through the composed write() algorithm first, then
+         // signal end-of-body with an empty write_eof_ call.
+         auto [ec, n] = co_await boost::capy::write(writer_, buffers);
+         if (ec)
+            co_return {ec, n};
+
+         ec = (co_await write_eof_({})).ec;
+         co_return {ec, n};
       }
 
       boost::capy::io_task<> write_eof()

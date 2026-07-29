@@ -332,9 +332,7 @@ capy::task<> Session::Impl::run()
 
    mlogd("session created");
 
-#if 0
-   // const uint32_t window_size = 256 * 1024 * 1024;
-   // const uint32_t window_size = 64 * 1024;
+#if 1
    const uint32_t window_size = 1024 * 1024;
    std::array<nghttp2_settings_entry, 2> iv{{{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100},
                                              {NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE, window_size}}};
@@ -405,8 +403,7 @@ capy::io_task<> Session::Impl::send_loop()
       {
          mylogd("send loop: writing {} bytes...", bytes_to_write);
          std::array<capy::const_buffer, 2> seq{
-            capy::make_buffer(pending),
-            capy::const_buffer(data, static_cast<std::size_t>(nread))};
+            capy::make_buffer(pending), capy::const_buffer(data, static_cast<std::size_t>(nread))};
          auto [ec, written] = co_await capy::write(stream_, seq);
          pending.clear();
          if (ec)
@@ -535,9 +532,9 @@ capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream)
                             Session::Reader(StreamReader(stream)));
    Session::Response response{Session::Writer(StreamWriter(stream)),
                               [self, stream](unsigned int status, const Session::Headers& headers)
-   { return self->submit_response(stream, status, headers); },
-                              [stream](std::span<capy::const_buffer const> buffers)
-   { return stream->write_eof(buffers); }};
+   {
+      return self->submit_response(stream, status, headers);
+   }, [stream](std::span<capy::const_buffer const> buffers) { return stream->write_eof(buffers); }};
 
    if (handler_)
    {
@@ -555,9 +552,8 @@ capy::task<> Session::Impl::handle_request(std::shared_ptr<Stream> stream)
 
 // -------------------------------------------------------------------------------------------------
 
-capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> stream,
-                                                      unsigned int status,
-                                                      const Session::Headers& headers)
+capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> stream, unsigned int status,
+                                               const Session::Headers& headers)
 {
    logd("[{}] submit_response: {}", log_prefix(stream->id()), status);
 
@@ -584,8 +580,9 @@ capy::io_task<> Session::Impl::submit_response(std::shared_ptr<Stream> stream,
 
 // -------------------------------------------------------------------------------------------------
 
-capy::io_task<Session::ClientRequest> Session::Impl::submit_request(
-   std::string_view path, std::optional<std::size_t> content_length, Session::Headers headers)
+capy::io_task<Session::ClientRequest>
+Session::Impl::submit_request(std::string_view path, std::optional<std::size_t> content_length,
+                              Session::Headers headers)
 {
    if (role_ != Role::client)
       co_return {std::make_error_code(std::errc::operation_not_permitted),
@@ -621,8 +618,7 @@ capy::io_task<Session::ClientRequest> Session::Impl::submit_request(
    for (const auto& nv : nva)
       logd("[{0}]   \x1b[1;34m{1:n}\x1b[0m: {1:v}", log_prefix(), nv);
 
-   auto id =
-      nghttp2_submit_request2(session_, nullptr, nva.data(), nva.size(), &prd, stream.get());
+   auto id = nghttp2_submit_request2(session_, nullptr, nva.data(), nva.size(), &prd, stream.get());
    if (id < 0)
    {
       mloge("submit_request: nghttp2_submit_request2 failed: {}", nghttp2_strerror(id));
@@ -640,8 +636,7 @@ capy::io_task<Session::ClientRequest> Session::Impl::submit_request(
    co_return {std::error_code{},
               Session::ClientRequest(Session::Writer(StreamWriter(stream)),
                                      [stream](std::span<capy::const_buffer const> buffers)
-   { return stream->write_eof(buffers); },
-                                     [stream]() -> capy::io_task<Session::ClientResponse>
+   { return stream->write_eof(buffers); }, [stream]() -> capy::io_task<Session::ClientResponse>
    {
       auto [ec, status] = co_await stream->status();
       co_return {ec, Session::ClientResponse(status, stream->content_length(), stream->headers(),
