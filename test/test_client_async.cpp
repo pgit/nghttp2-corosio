@@ -33,6 +33,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 using namespace std::string_view_literals;
 namespace rv = std::ranges::views;
@@ -166,6 +167,39 @@ TEST_F(ClientAsync, PostData_ReceivesEcho)
                                  nghttp2_corosio_test::count(request));
       EXPECT_FALSE(wec);
       EXPECT_EQ(received, bytes);
+   });
+}
+
+// -------------------------------------------------------------------------------------------------
+
+TEST_F(ClientAsync, PostManyBuffers_ReceivesEcho)
+{
+   // 20 buffers -- deliberately more than capy's iovec cap (max_iovec_ == 16), so write_eof() has
+   // to drain a sequence spanning several producer_callback() invocations rather than one.
+   run([](Session session) -> capy::task<>
+   {
+      auto [ec, request] = co_await session.submit_request("/echo");
+      EXPECT_FALSE(ec);
+
+      std::vector<std::string> chunks;
+      for (int i = 0; i < 20; ++i)
+         chunks.push_back("chunk" + std::to_string(i) + " ");
+
+      std::string expected;
+      std::vector<capy::const_buffer> buffers;
+      for (auto const& chunk : chunks)
+      {
+         expected += chunk;
+         buffers.push_back(capy::make_buffer(chunk));
+      }
+
+      auto [wec, wn] = co_await request.write_eof(buffers);
+      EXPECT_FALSE(wec);
+      EXPECT_EQ(wn, expected.size());
+
+      auto [rec, body] = co_await nghttp2_corosio_test::read(request);
+      EXPECT_FALSE(rec);
+      EXPECT_EQ(body, expected);
    });
 }
 

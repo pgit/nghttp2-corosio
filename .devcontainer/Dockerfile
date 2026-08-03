@@ -1,4 +1,4 @@
-FROM docker.io/psedoc/cpp-devcontainer:0.25
+FROM docker.io/psedoc/cpp-devcontainer:0.26
 
 #
 # capy and corosio are fetched and built by CMake (see FetchContent in

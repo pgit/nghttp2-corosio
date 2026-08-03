@@ -105,7 +105,7 @@ namespace
 // a minimal standalone repro (server+client openssl_stream, no nghttp2 involved) hitting the
 // identical deadlock. Re-enable once corosio fixes this (or provides a backend that doesn't
 // serialize read/write through one lock held across a blocking op).
-TEST(TlsTest, DISABLED_EchoesRequestBodyOverTls)
+TEST(TlsTest, EchoesRequestBodyOverTls)
 {
    nghttp2_corosio::Config config;
    config.port = 0; // ask the OS for an unused port
