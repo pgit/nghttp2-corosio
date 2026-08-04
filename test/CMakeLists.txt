@@ -13,6 +13,7 @@ find_package(boost_process 1.86 CONFIG REQUIRED)
 
 add_executable(nghttp2-corosio-tests
     ${CMAKE_SOURCE_DIR}/echo_handler.cpp
+    issue_tls_full_duplex.cpp
     request_handlers.cpp
     test_any_read_stream_timeout_bug.cpp
     test_client.cpp
@@ -28,6 +29,7 @@ target_link_libraries(nghttp2-corosio-tests
         nghttp2-corosio
         GTest::gtest_main
         Boost::process
+        Boost::corosio_openssl
 )
 
 # =================================================================================================
