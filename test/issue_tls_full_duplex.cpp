@@ -1,5 +1,3 @@
-// https://github.com/cppalliance/corosio/issues/330
-//
 // "TLS: concurrent read and write deadlocks" -- co_await capy::when_all(reader, writer) on a
 // single openssl_stream never completed both sides: read_input() (invoked when SSL_read needs
 // more ciphertext) held corosio's io_cm_ mutex across a blocking socket-level read, so
@@ -108,7 +106,8 @@ capy::task<> client_session(corosio::io_context& ioc, corosio::endpoint ep,
 
 } // namespace
 
-TEST(TlsFullDuplex, ConcurrentReadAndWriteBothComplete)
+// https://github.com/cppalliance/corosio/issues/330
+TEST(Issue, ConcurrentReadAndWriteBothComplete)
 {
    corosio::io_context ioc;
 

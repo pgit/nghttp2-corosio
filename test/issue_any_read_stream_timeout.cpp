@@ -1,4 +1,3 @@
-// https://github.com/cppalliance/corosio/issues/327
 
 #include <boost/capy.hpp>
 #include <boost/capy/test/read_stream.hpp>
@@ -22,7 +21,8 @@ capy::task<> timeout_read_some()
    std::ignore = co_await corosio::timeout(stream.read_some(capy::make_buffer(buf)), 50ms);
 }
 
-TEST(AnyReadStreamTimeoutBug, SegfaultsOnUninitializedAwaitable)
+// https://github.com/cppalliance/corosio/issues/327
+TEST(Issue, AnyReadStreamTimeoutSegfault)
 {
    corosio::io_context ioc;
    capy::run_async(ioc.get_executor())(timeout_read_some());
