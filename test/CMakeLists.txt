@@ -103,6 +103,10 @@ if (VALGRIND_EXECUTABLE)
             --errors-for-leak-kinds=definite,indirect,possible
             --track-origins=yes
             $<TARGET_FILE:nghttp2-corosio-tests>
+            # ClientCancelsWrite_CanResume is timing-based (races a real clock against flow-control
+            # windows); valgrind's slowdown throws its timing off and makes it unreasonably slow to
+            # boot, so it's excluded here rather than run instrumented.
+            --gtest_filter=-ClientAsync.ClientCancelsWrite_CanResume
     )
     # Same reason as gtest_discover_tests()'s WORKING_DIRECTORY above: without it, External's
     # fixture-construction-time file_size("CMakeLists.txt") throws before any test body runs
